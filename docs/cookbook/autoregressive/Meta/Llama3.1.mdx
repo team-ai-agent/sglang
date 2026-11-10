@@ -35,6 +35,10 @@ import { Llama31Deployment } from "/src/snippets/autoregressive/llama31-deployme
 <Llama31Deployment />
 ### 3.2 Configuration Tips
 
+**KV-cache precision:**
+
+- FP8-KV checkpoints can include calibrated K/V scales even when the server uses the default BF16/FP16 KV cache. Triton attention applies these scales only when the resolved KV-cache dtype is FP8; unquantized cache values must not be dequantized again.
+
 **Speculative Decoding (NVIDIA GPUs):**
 
 - Using Speculative Decoding for latency-sensitive scenarios:

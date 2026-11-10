@@ -14,8 +14,66 @@ from sglang.srt.mem_cache.kv.alloc.id_space import IdSpaceKind
 from sglang.srt.model_executor.forward_mode import ForwardMode
 from sglang.srt.speculative.spec_info import SpecInput, SpecInputType
 from sglang.test.ci.ci_register import register_cpu_ci
+from sglang.test.test_utils import CustomTestCase
 
 register_cpu_ci(est_time=11, suite="base-a-test-cpu")
+
+
+class TestTritonKVDescaling(CustomTestCase):
+    def test_decode_ignores_checkpoint_scales_for_unquantized_cache(self):
+        """Loaded FP8 metadata must not rescale BF16/FP16 attention values."""
+        for dtype in (torch.bfloat16, torch.float16, torch.float8_e4m3fn):
+            with self.subTest(dtype=dtype):
+                quantized = dtype == torch.float8_e4m3fn
+                logical_k = torch.tensor([[[1.0, 0.0]], [[0.0, 1.0]]])
+                logical_v = torch.tensor([[[10.0, 20.0]], [[30.0, 40.0]]])
+                k = (logical_k / 0.25 if quantized else logical_k).to(dtype)
+                v = (logical_v / 0.5 if quantized else logical_v).to(dtype)
+                backend = TritonAttnBackend.__new__(TritonAttnBackend)
+                backend.use_fp8_kv_cache = quantized
+                backend.token_to_kv_pool = SimpleNamespace(
+                    get_key_buffer=lambda _: k, get_value_buffer=lambda _: v
+                )
+                backend.forward_metadata = SimpleNamespace(
+                    kv_indptr=torch.tensor([0, 2], dtype=torch.int32),
+                    kv_indices=torch.tensor([0, 1]),
+                    attn_logits=None, attn_lse=None, num_kv_splits=None,
+                    swa_attn_logits=None,
+                    lean_Mp=None, lean_Lp=None, lean_Op=None,
+                    lean_locks=None, uneven_batch=None,
+                )
+                backend.enable_deterministic = True
+                backend.dcp_size = 1
+                backend.max_kv_splits = 1
+                backend.use_mla = False
+                backend.use_pdl = False
+                backend.page_size = 1
+                layer = SimpleNamespace(
+                    layer_id=0, tp_q_head_num=1, tp_k_head_num=1,
+                    qk_head_dim=2, v_head_dim=2, scaling=1.0,
+                    sliding_window_size=None, logit_capping_method="tanh",
+                    logit_cap=0.0, xai_temperature_len=-1,
+                    k_scale=torch.tensor(0.25), v_scale=torch.tensor(0.5),
+                    k_scale_float=0.25, v_scale_float=0.5,
+                )
+
+                def reference_kernel(q, cache_k, cache_v, out, *args, **kwargs):
+                    scores = q.float().reshape(1, 2) @ (
+                        cache_k.float().reshape(2, 2) * args[7]
+                    ).t()
+                    result = scores.softmax(-1) @ (
+                        cache_v.float().reshape(2, 2) * args[8]
+                    )
+                    out.copy_(result.reshape_as(out))
+
+                backend.decode_attention_fwd = reference_kernel
+                q = torch.tensor([[1.0, 0.0]])
+                output = backend.forward_decode(
+                    q=q, k=None, v=None, layer=layer,
+                    forward_batch=SimpleNamespace(), save_kv_cache=False,
+                )
+                expected = (q @ logical_k.reshape(2, 2).t()).softmax(-1) @ logical_v.reshape(2, 2)
+                torch.testing.assert_close(output, expected, rtol=0, atol=1e-6)
 
 
 class _BonusTokenVerifyInput(SpecInput):
@@ -169,6 +227,7 @@ def test_unified_target_verify_uses_resolved_metadata(with_spec_info):
     backend.device = torch.device("cpu")
     backend.dcp_size = 1
     backend.enable_deterministic = True
+    backend.use_fp8_kv_cache = False
     backend.use_dense_fp8_chunked_prefill = False
     backend.allow_bidirectional_attention_in_extend = False
     backend.page_size = 1
