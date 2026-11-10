@@ -40,6 +40,15 @@ import { Qwen3Deployment } from "/src/snippets/autoregressive/qwen3-deployment.j
 
 <Qwen3Deployment />
 
+**BMG FP8 scope:** `Qwen/Qwen3-32B-FP8` has a separate four-card BMG recipe
+checked on upstream SGLang commit `d50f98e7f8c281d6451935b2a475009f94201549`.
+It preserves the checked 16,384-token context, static memory fraction 0.8,
+and four request slots. `UR_L0_USE_COPY_ENGINE=0` routes Level Zero copies away
+from dedicated copy engines. This recipe leaves graphs and optional parsers
+off; it establishes basic text generation, not full-context, tool-calling,
+or benchmark accuracy support. Other hardware and existing BMG BF16 commands
+are unchanged.
+
 ### 3.2 Configuration Tips
 
 - **Qwen3-8B on B300 (BF16, TP1):** SGLang selects `trtllm_mha` by default when speculative decoding is disabled. If your launch command sets `--attention-backend flashinfer`, remove it or replace it with `--attention-backend trtllm_mha`.

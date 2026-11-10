@@ -1,0 +1,38 @@
+{
+  "b200": {
+    "count": 100,
+    "sha256": "d363a479be16ab4dbe850c65ec941e3bfbaa95d9544abe4a09e98649eda3eb6c"
+  },
+  "b300": {
+    "count": 100,
+    "sha256": "555dd22375f22963d1c4a10166bfb6f3f3666b9e22d07c79362a0afe9cdb217d"
+  },
+  "h100": {
+    "count": 100,
+    "sha256": "721b26b08d372dc819554ddfae7031c2e82f99c453fc24a72ccb3965c5737084"
+  },
+  "h200": {
+    "count": 100,
+    "sha256": "50c6a004c1005c936afebec3b9964a979729dbd747c2ea01d47dc7c9016dad25"
+  },
+  "mi300x": {
+    "count": 100,
+    "sha256": "3d9079e0fec18aad02a38f9df439c6dded18e2b50ac8478c247f0571b9adba33"
+  },
+  "mi325x": {
+    "count": 100,
+    "sha256": "577a573f8ab353a0f9edccfdecfee98262d94eb07046fbada3c5e84b6860c13a"
+  },
+  "mi355x": {
+    "count": 100,
+    "sha256": "092b3f93897f19434376f18eaad9d11b8ec30d7898d48fc4d560c342ae4d8dd5"
+  },
+  "xeon": {
+    "count": 100,
+    "sha256": "31db05943b7f540d1e67890bac6c14b5b7d6e6f8281af53d51d52e50bfd27c3b"
+  },
+  "arc_b": {
+    "count": 8,
+    "sha256": "d4d34bd14fc597695dfe43db594e3c4c9e709c8164c4a604616447ee2d91c90d"
+  }
+}

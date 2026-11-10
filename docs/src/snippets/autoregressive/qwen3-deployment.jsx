@@ -177,7 +177,7 @@ export const Qwen3Deployment = () => {
         ...baseOptions.quantization,
         items: baseOptions.quantization.items.map(item => ({
           ...item,
-          disabled: item.id !== 'bf16'
+          disabled: item.id !== 'bf16' && !(values.modelsize === '32b' && item.id === 'fp8')
         }))
       };
 
@@ -204,6 +204,17 @@ export const Qwen3Deployment = () => {
     // Only show reasoningParser when category is not 'instruct'
     if (values.category === 'instruct') {
       delete options.reasoningParser;
+    }
+
+    if (values.hardware === 'arc_b' && values.quantization === 'fp8') {
+      for (const name of ['reasoningParser', 'toolcall']) {
+        if (options[name]) {
+          options[name] = {
+            ...options[name],
+            items: options[name].items.map(item => ({ ...item, disabled: item.id !== 'disabled' }))
+          };
+        }
+      }
     }
 
     return options;
@@ -239,8 +250,22 @@ export const Qwen3Deployment = () => {
 
   const handleRadioChange = (optionName, value) => {
     setValues(prev => {
+      if (prev.hardware === 'arc_b') {
+        if (optionName === 'quantization' && value === 'fp8' && prev.modelsize !== '32b') return prev;
+        if (prev.quantization === 'fp8' &&
+            ((['reasoningParser', 'toolcall'].includes(optionName) && value !== 'disabled') ||
+             (optionName === 'category' && value !== 'base'))) return prev;
+      }
       const newValues = { ...prev, [optionName]: value };
 
+      if (prev.hardware === 'arc_b' && optionName === 'quantization' && value === 'fp8') {
+        newValues.category = 'base';
+        newValues.reasoningParser = 'disabled';
+        newValues.toolcall = 'disabled';
+      }
+      if (prev.hardware === 'arc_b' && optionName === 'modelsize' && value !== '32b' && prev.quantization === 'fp8') {
+        newValues.quantization = 'bf16';
+      }
       if (optionName === 'hardware' && value === 'arc_b') {
         newValues.quantization = 'bf16';
         if (newValues.modelsize !== '30b' && newValues.modelsize !== '32b') {
@@ -271,6 +296,12 @@ export const Qwen3Deployment = () => {
   // Generate command
   const generateCommand = () => {
     const { hardware, modelsize, quantization, category, reasoningParser, toolcall } = values;
+    if (hardware === 'arc_b' && quantization === 'fp8') {
+      if (modelsize !== '32b' || category !== 'base' || reasoningParser !== 'disabled' || toolcall !== 'disabled') {
+        return '# Select the validated BMG 32B FP8 configuration';
+      }
+      return 'UR_L0_USE_COPY_ENGINE=0 sglang serve --model Qwen/Qwen3-32B-FP8 \\\n  --device xpu --attention-backend intel_xpu --tp 4 --page-size 64 \\\n  --context-length 16384 --mem-fraction-static 0.8 --max-running-requests 4';
+    }
     const effectiveQuantization = hardware === 'arc_b' ? 'bf16' : quantization;
 
     // Special error handling
