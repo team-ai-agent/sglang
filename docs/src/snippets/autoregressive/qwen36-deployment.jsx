@@ -31,8 +31,8 @@ export const Qwen36Deployment = () => {
       // RTX Spark only has a validated recipe for 35B-A3B NVFP4.
       getDynamicItems: (values) => [
         { id: '35b-a3b', label: '35B-A3B (MoE)', default: true },
-        { id: '27b', label: '27B (Dense)', default: false, disabled: values.hardware === 'rtx-spark' || values.hardware === 'arc_b',
-          disabledReason: values.hardware === 'arc_b' ? 'Only 35B-A3B is validated on BMG' : values.hardware === 'rtx-spark' ? 'Only 35B-A3B NVFP4 is validated on RTX Spark' : '' },
+        { id: '27b', label: '27B (Dense)', default: false, disabled: values.hardware === 'rtx-spark',
+          disabledReason: values.hardware === 'rtx-spark' ? 'Only 35B-A3B NVFP4 is validated on RTX Spark' : '' },
       ],
     },
     quantization: {
@@ -43,6 +43,9 @@ export const Qwen36Deployment = () => {
       // RTX Spark only has a validated NVFP4 recipe (35B-A3B).
       getDynamicItems: (values) => {
         if (values.hardware === 'arc_b') {
+          if (values.modelSize === '27b') {
+            return [{ id: 'bf16', label: 'BF16', default: true }];
+          }
           return [{ id: 'bf16', label: 'BF16', default: true }, { id: 'fp8', label: 'FP8', default: false }];
         }
         if (values.hardware === 'a3') {
@@ -176,6 +179,9 @@ export const Qwen36Deployment = () => {
       if (!option || (option.condition && !option.condition(prev))) return prev;
       const item = resolveItems(option, prev).find((candidate) => candidate.id === value);
       if (!item || item.disabled) return prev;
+      if (optionName === 'modelSize' && value === '27b') {
+        return { ...prev, modelSize: value, quantization: 'bf16' };
+      }
     }
     return { ...prev, [optionName]: value };
   };
@@ -226,8 +232,11 @@ export const Qwen36Deployment = () => {
     const sizeConfig = modelConfigs[modelSize];
 
     if (hardware === 'arc_b') {
+      if (modelSize === '27b' && quantization === 'bf16' && speculative === 'disabled') {
+        return 'UR_L0_USE_COPY_ENGINE=0 UR_L0_USE_IMMEDIATE_COMMANDLISTS=0 UR_L0_USE_DRIVER_COUNTER_BASED_EVENTS=0 UR_L0_DISABLE_EVENTS_CACHING=1 sglang serve --model-path Qwen/Qwen3.6-27B \\\n  --device xpu --attention-backend intel_xpu \\\n  --tp 4 --linear-attn-backend intel_xpu --page-size 1 --reasoning-parser qwen3 \\\n  --context-length 16384 --mem-fraction-static 0.8 --max-running-requests 4';
+      }
       if (modelSize !== '35b-a3b' || !['bf16', 'fp8'].includes(quantization) || speculative !== 'disabled') {
-        return '# Select the validated BMG 35B-A3B BF16 or FP8 configuration';
+        return '# Select BMG 35B-A3B BF16/FP8 or 27B BF16 without speculative decoding';
       }
       if (quantization === 'fp8') {
         return 'UR_L0_USE_COPY_ENGINE=0 sglang serve --model-path Qwen/Qwen3.6-35B-A3B-FP8 \\\n  --device xpu --attention-backend intel_xpu \\\n  --tp 4 --linear-attn-backend intel_xpu --page-size 1 \\\n  --context-length 16384 --mem-fraction-static 0.8 --max-running-requests 4';
