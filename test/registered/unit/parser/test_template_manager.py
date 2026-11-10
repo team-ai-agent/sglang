@@ -5,6 +5,7 @@ from types import ModuleType, SimpleNamespace
 from unittest.mock import Mock, patch
 
 import msgspec
+from transformers import AutoConfig
 
 from sglang.srt.parser.template_detection import (
     REASONING_PARSER_RULES,
@@ -1384,6 +1385,61 @@ class TestResolveAutoParsers(CustomTestCase):
 
         self.assertEqual(_declared(args, "reasoning_parser"), "deepseek-v3")
         self.assertEqual(_declared(args, "tool_call_parser"), "deepseekv32")
+
+
+class TestPaddleOCRTemplateSelection(CustomTestCase):
+    def _load(self, template, *, processor_template=None, explicit=None):
+        from sglang.srt.parser.template_manager import TemplateManager
+
+        tokenizer = _DummyTokenizer([], chat_template=template)
+        tokenizer_manager = SimpleNamespace(
+            tokenizer=tokenizer,
+            processor=SimpleNamespace(chat_template=processor_template),
+            model_config=SimpleNamespace(
+                hf_config=AutoConfig.for_model("paddleocr_vl")
+            ),
+        )
+        manager = TemplateManager()
+        manager.load_chat_template(
+            tokenizer_manager, explicit, "PaddlePaddle/PaddleOCR-VL-1.6"
+        )
+        return manager, tokenizer
+
+    @staticmethod
+    def _template(suffix):
+        return (
+            "{% for message in messages %}"
+            "{% for content in message['content'] %}"
+            "{% if content['type'] == 'text' %}{{ content['text'] }}{% endif %}"
+            "{% endfor %}{% endfor %}"
+            "{{ 'Assistant:" + suffix + "' }}"
+        )
+
+    def test_checkpoint_assistant_prefix_is_not_replaced_by_legacy_template(self):
+        """Paddle release-specific generation prefixes must survive auto-selection."""
+        for suffix in (" ", "\\n"):
+            with self.subTest(suffix=suffix):
+                template = self._template(suffix)
+                manager, tokenizer = self._load(template)
+                self.assertIsNone(manager.chat_template_name)
+                self.assertEqual(tokenizer.chat_template, template)
+                self.assertEqual(manager.jinja_template_content_format, "openai")
+
+    def test_processor_template_wins_over_stale_tokenizer_template(self):
+        template = self._template("\\n")
+        manager, tokenizer = self._load(
+            self._template(" "), processor_template=template
+        )
+        self.assertIsNone(manager.chat_template_name)
+        self.assertEqual(tokenizer.chat_template, template)
+
+    def test_missing_checkpoint_template_keeps_legacy_fallback(self):
+        manager, _ = self._load(None)
+        self.assertEqual(manager.chat_template_name, "paddle-ocr")
+
+    def test_explicit_legacy_template_is_respected(self):
+        manager, _ = self._load(self._template("\\n"), explicit="paddle-ocr")
+        self.assertEqual(manager.chat_template_name, "paddle-ocr")
 
 
 if __name__ == "__main__":
