@@ -1155,6 +1155,47 @@ class InputItemNormalizationTestCase(CustomTestCase):
 
 
 class FullResponseUsageTestCase(CustomTestCase):
+    def test_harmony_usage_does_not_require_prompt_token_ids(self):
+        """Harmony responses must count engine prompt tokens without token-ID echoes."""
+        serving = make_serving()
+        serving.use_harmony = True
+        context = HarmonyContext([], {})
+        request = ResponsesRequest(
+            model="x", input="hello", request_id="resp_harmony_usage", store=False
+        )
+
+        async def generate():
+            context.append_output(
+                {
+                    "output_ids": [],
+                    "meta_info": {
+                        "prompt_tokens": 11,
+                        "completion_tokens": 7,
+                        "cached_tokens": 3,
+                        "finish_reason": {"type": "stop"},
+                    },
+                }
+            )
+            yield None
+
+        response = asyncio.run(
+            serving.responses_full_generator(
+                request,
+                sampling_params={},
+                result_generator=generate(),
+                context=context,
+                model_name="x",
+                tokenizer=serving.tokenizer_manager.tokenizer,
+                request_metadata=RequestResponseMetadata(request_id=request.request_id),
+                require_reasoning=False,
+                output_items=[],
+            )
+        )
+        self.assertEqual(response.usage.prompt_tokens, 11)
+        self.assertEqual(response.usage.completion_tokens, 7)
+        self.assertEqual(response.usage.total_tokens, 18)
+        self.assertEqual(context.num_cached_tokens, 3)
+
     def test_full_response_uses_dict_meta_info_for_usage(self):
         serving = make_serving()
         context = SimpleContext()
