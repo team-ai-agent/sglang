@@ -8,12 +8,24 @@ from sglang.kernels.registry import register_kernel
 from sglang.kernels.selector import get_kernel
 from sglang.kernels.spec import (
     CUDA_ONLY,
+    CapabilityRequirement,
+    DeviceType,
     KernelBackend,
     KernelSpec,
 )
 
 if TYPE_CHECKING:
     import torch
+
+
+register_kernel(
+    KernelSpec(
+        op="quantization.dequantize_nvfp4",
+        backend=KernelBackend.TRITON,
+        target="sglang.kernels.ops.quantization.nvfp4_xpu:dequantize_nvfp4",
+        capabilities=frozenset({CapabilityRequirement(device=DeviceType.XPU)}),
+    )
+)
 
 
 register_kernel(

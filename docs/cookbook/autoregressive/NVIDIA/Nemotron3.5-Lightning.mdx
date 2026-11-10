@@ -47,6 +47,32 @@ import { benchmarks } from "/src/snippets/configs/nvidia/nemotron-3.5-lightning-
 
 <Deployment config={config} benchmarks={benchmarks} />
 
+### Intel XPU: TP=1 after source fixes
+
+The basic single-card recipe is **supported after source fixes**, not natively by the unmodified source. The exact `nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4` checkpoint passes all eight fresh curl fixtures and AI whole-output review: text, streaming, JSON extraction, arithmetic, thinking switches, and normal/streamed parsed tools. Its finite reasoning and complete final answers are reviewed independently; neither a Nano result nor a numerical component test substitutes for this checkpoint's validation.
+
+Use Linux with one Arc Pro B60 (24 GiB), PyTorch `2.14.0+xpu`, transformers `5.19.0`, and `sglang-kernel-xpu` `0.4.0`. Your source build must include the XPU ModelOpt adapter, single-pass NVFP4 decoder, non-gated ReLU2 expert layout, fused-scalar loader registration, and platform-aware Nemotron defaults that do not force CUDA Marlin on XPU.
+
+```bash Command
+python -m sglang.launch_server \
+  --model-path nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4 \
+  --served-model-name nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4 \
+  --device xpu --tp-size 1 --host 127.0.0.1 --port 30000 \
+  --attention-backend intel_xpu --linear-attn-backend intel_xpu \
+  --reasoning-parser nemotron_3 --tool-call-parser qwen3_coder \
+  --trust-remote-code --kv-cache-dtype bfloat16 \
+  --mem-fraction-static 0.98 --max-running-requests 1 \
+  --disable-radix-cache --disable-overlap-schedule \
+  --chunked-prefill-size 1024 --context-length 16384 \
+  --model-loader-extra-config '{"enable_multithread_load":false}'
+```
+
+Keep the original mixed quantization map: FP8 Mamba projections and `W4A16_NVFP4` experts/shared MLPs. Packed NVFP4 weights and their group-16 E4M3FN scales and multiplicative global factors stay on XPU; only active projections/experts dequantize on device for BF16 arithmetic. Non-gated ReLU2 and already-scaled TopK weights are preserved. This is **W4A16 execution, not W4A4 or native FP4 hardware acceleration**, with no checkpoint replacement, full-model expansion, or CPU model forward.
+
+Both attention backend flags are explicit; Mamba2 retains its default Triton Mamba path. Optional FP8 KV caching, radix caching, overlap, MTP and external drafts are off. Context and concurrency are limited for this card; advertised maximum context and performance are unverified.
+
+The checked generation parameters are this checkpoint's published `temperature=1.0, top_p=0.95` for text and tool fixtures, with an 8192-token output budget. Streaming fixtures end with complete stop/tool-call structure and `[DONE]`. This is a qualitative basic-function check, not a formal accuracy benchmark or a guarantee for every task or sample. Keep the optional modes above outside this support verdict.
+
 ## Playground
 
 The Playground is where you experiment with **SGLang features beyond the verified matrix**. The Deploy panel above only emits combinations the SGLang team has signed off on; the Playground lets you turn on additional knobs on top of whichever cell the Deploy panel is currently showing.
