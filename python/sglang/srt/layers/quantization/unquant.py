@@ -800,6 +800,7 @@ class UnquantizedLinearMethod(LinearMethodBase):
         bias: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         if use_intel_amx_backend(layer):
+            x = x.contiguous()
             x_shapes = x.shape
             if len(x_shapes) == 3:
                 x = x.view(-1, x.shape[-1])
