@@ -95,6 +95,46 @@ class TestHermesDetector(CustomTestCase):
         self.assertEqual(len(result.calls), 0)
         self.assertEqual(result.normal_text, "The weather is nice today.")
 
+    def test_wrapped_calls_do_not_leak_model_protocol_tags(self):
+        """Step3's outer tool_calls wrapper must not become assistant content."""
+        text = (
+            "Checking now.\n<tool_calls>\n<tool_call>"
+            '{"name":"get_weather","arguments":{"city":"Beijing"}}'
+            "</tool_call>\n</tool_calls>"
+        )
+        result = self.detector.detect_and_parse(text, self.tools)
+        self.assertEqual(result.normal_text, "Checking now.")
+        self.assertEqual(result.calls[0].name, "get_weather")
+        self.assertEqual(json.loads(result.calls[0].parameters), {"city": "Beijing"})
+
+    def test_streaming_wrapper_tags_can_cross_chunk_boundaries(self):
+        """Outer call delimiters must not leak when split across stream chunks."""
+        text = (
+            "Checking now.\n<tool_calls>\n<tool_call>"
+            '{"name":"get_weather","arguments":{"city":"Beijing"}}'
+            "</tool_call>\n</tool_calls>"
+        )
+        for width in (1, 7):
+            with self.subTest(width=width):
+                detector = HermesDetector()
+                parts = [
+                    detector.parse_streaming_increment(text[i : i + width], self.tools)
+                    for i in range(0, len(text), width)
+                ]
+                parts.append(detector.parse_streaming_increment("", self.tools))
+                normal = "".join(part.normal_text for part in parts)
+                calls = [call for part in parts for call in part.calls]
+                self.assertNotIn("<tool_calls>", normal)
+                self.assertNotIn("</tool_calls>", normal)
+                self.assertEqual(normal.strip(), "Checking now.")
+                self.assertEqual(
+                    [call.name for call in calls if call.name], ["get_weather"]
+                )
+                self.assertEqual(
+                    json.loads("".join(call.parameters for call in calls)),
+                    {"city": "Beijing"},
+                )
+
     def test_tool_call_with_multiple_arguments(self):
         text = '<tool_call>{"name": "get_weather", "arguments": {"city": "London", "unit": "celsius"}}</tool_call>'
         result = self.detector.detect_and_parse(text, self.tools)
