@@ -23,8 +23,11 @@ export const config = (() => {
   };
   const config = {
     modelName: "SANA-Video",
-    supportedHardware: ["cuda"],
-    hardware: [{ id: "cuda", label: "NVIDIA CUDA", vram: "", vendor: "nvidia" }],
+    supportedHardware: ["cuda", "arc_b"],
+    hardware: [
+      { id: "cuda", label: "NVIDIA CUDA", vram: "", vendor: "nvidia" },
+      { id: "arc_b", label: "BMG", vram: "24GB", vendor: "intel" },
+    ],
     groupHardware: false,
     matchDims: [],
     overlayDims: [],
@@ -32,7 +35,7 @@ export const config = (() => {
       defaultSelection: defaults,
       resource: {
         limits: { nodes: { min: 1, max: 1 }, gpus_per_node: { min: 1, max: 1 } },
-        verifiedRecipes: ["cuda"].map((hw) => {
+        verifiedRecipes: ["cuda", "arc_b"].map((hw) => {
           const s = { ...defaults, hw };
           const p = plan(s);
           return {
