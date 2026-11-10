@@ -1260,7 +1260,13 @@ class LayerNorm(BaseFusedOp):
         self,
         x: torch.Tensor,
     ) -> torch.Tensor:
-        if _is_cpu_amx_available:
+        if (
+            _is_cpu_amx_available
+            and self.elementwise_affine
+            and x.dtype in (torch.float16, torch.bfloat16)
+            and x.dtype == self.weight.dtype
+            and (not self.use_bias or x.dtype == self.bias.dtype)
+        ):
             bias_data = self.bias.data if self.use_bias else None
             return torch.ops.sgl_kernel.layernorm_cpu(
                 x, self.weight.data, bias_data, self.variance_epsilon
