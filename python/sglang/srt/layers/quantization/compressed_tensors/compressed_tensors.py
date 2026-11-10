@@ -705,9 +705,11 @@ class CompressedTensorsConfig(QuantizationConfig):
         # checkpoints carry a weight zero-point.
         return is_channel_group and input_quant_none and is_static and is_int_type
 
-    def _is_wna16_triton_moe_supported(self, weight_quant: BaseModel) -> bool:
+    def _is_wna16_triton_moe_supported(
+        self, weight_quant: BaseModel, *, supported_bits: tuple[int, ...] = (4,)
+    ) -> bool:
         return (
-            weight_quant.num_bits == 4
+            weight_quant.num_bits in supported_bits
             and weight_quant.type == QuantizationType.INT
             and weight_quant.strategy == QuantizationStrategy.GROUP.value
             and weight_quant.group_size in (32, 128)
@@ -1000,6 +1002,21 @@ class CompressedTensorsConfig(QuantizationConfig):
                     and get_moe_runner_backend().is_flashinfer_trtllm()
                 ):
                     return CompressedTensorsMxInt4MoE(self, weight_quant=weight_quant)
+                elif _is_xpu:
+                    if not self._is_wna16_triton_moe_supported(
+                        weight_quant, supported_bits=(4, 8)
+                    ):
+                        raise NotImplementedError(
+                            "XPU WNA16 MoE supports symmetric INT4/INT8 group "
+                            "quantization with group_size=32 or 128 and no actorder."
+                        )
+                    moe_backend = get_moe_runner_backend()
+                    if not (moe_backend.is_auto() or moe_backend.is_triton()):
+                        raise ValueError("XPU WNA16 MoE requires auto or triton.")
+                    logger.info_once("Using CompressedTensorsWNA16TritonMoE (XPU)")
+                    return CompressedTensorsWNA16TritonMoE(
+                        self, weight_quant=weight_quant
+                    )
                 elif _is_hip:
                     logger.info_once("Using CompressedTensorsWNA16TritonMoE (ROCm)")
                     return CompressedTensorsWNA16TritonMoE(

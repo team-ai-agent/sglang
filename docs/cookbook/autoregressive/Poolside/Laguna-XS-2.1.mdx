@@ -140,6 +140,25 @@ Low-latency cells carry `--mem-fraction-static 0.7`: the default fraction OOMs i
 
 The INT4 checkpoint quantizes MoE layers in mixed 4-bit / 8-bit config groups. Builds older than [PR #29761](https://github.com/sgl-project/sglang/pull/29761) crash at load with `KeyError: 'Linear'`.
 
+**Intel XPU: TP=1 INT4**
+
+The original `poolside/Laguna-XS-2.1-INT4` checkpoint was validated on Linux with one Arc Pro B60 (24 GiB), PyTorch `2.14.0+xpu`, transformers `5.19.0`, and `sglang-kernel-xpu` `0.4.0`. Your SGLang build must include the XPU packed W4A16/W8A16 MoE selection and bit-width handling fixes. The 8-bit expert groups must not be reinterpreted as 4-bit weights.
+
+```bash Command
+python -m sglang.launch_server \
+  --model-path poolside/Laguna-XS-2.1-INT4 \
+  --device xpu --tp-size 1 --host 127.0.0.1 --port 30000 \
+  --attention-backend intel_xpu --linear-attn-backend intel_xpu \
+  --trust-remote-code \
+  --reasoning-parser poolside_v1 --tool-call-parser poolside_v1 \
+  --mem-fraction-static 0.98 --max-running-requests 1 \
+  --disable-radix-cache --disable-overlap-schedule \
+  --chunked-prefill-size 1024 --context-length 8192 \
+  --model-loader-extra-config '{"enable_multithread_load":false}'
+```
+
+Triton is used for the packed **expert matmuls**, not as the attention backend. Keep attention on `intel_xpu`; the warning about Triton attention above still applies. Basic curl checks covered text, arithmetic, JSON extraction, thinking on/off, normal and streamed tools, streamed reasoning, and code generation. Maximum context, performance, DFlash, and cache-enabled modes were not validated. This result does not establish XPU support for the separate NVFP4 or FP8 checkpoints.
+
 **Chat template**
 
 On transformers ≥ 5.10 the standalone `chat_template.jinja` auto-loads — no flag needed (the server logs `Auto-detected template features: reasoning_parser=poolside_v1, ...`). On older transformers (≤ ~5.8) the `{% include %}` stub in `tokenizer_config.json` cannot resolve and the server silently falls back to a generic template — pass `--chat-template <model-dir>/chat_template.jinja` explicitly there.
