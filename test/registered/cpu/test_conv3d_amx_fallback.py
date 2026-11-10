@@ -24,8 +24,12 @@ class TestConv3dAmxFallback(unittest.TestCase):
                 (3, 16, (2, 4, 8)),
             ):
                 with self.subTest(dtype=dtype, channels=channels, outputs=outputs):
-                    layer = Conv3dLayer(channels, outputs, kernel, stride=kernel).to(dtype)
-                    value = torch.randn(2, channels, *(2 * k for k in kernel), dtype=dtype)
+                    layer = Conv3dLayer(channels, outputs, kernel, stride=kernel).to(
+                        dtype
+                    )
+                    value = torch.randn(
+                        2, channels, *(2 * k for k in kernel), dtype=dtype
+                    )
                     expected = F.conv3d(value, layer.weight, layer.bias, stride=kernel)
                     _amx_process_weight_after_loading(layer, ["weight"])
                     self.assertFalse(layer.use_intel_amx_backend)
@@ -41,12 +45,16 @@ class TestConv3dAmxFallback(unittest.TestCase):
                 kernel = (2, 4, 8)
                 layer = Conv3dLayer(3, 32, kernel, stride=kernel).to(dtype)
                 value = torch.randn(2, 3, *kernel, dtype=dtype)
-                expected = F.conv3d(value, layer.weight, layer.bias, stride=kernel).flatten(1)
+                expected = F.conv3d(
+                    value, layer.weight, layer.bias, stride=kernel
+                ).flatten(1)
                 _amx_process_weight_after_loading(layer, ["weight"])
                 self.assertTrue(layer.use_intel_amx_backend)
                 torch.testing.assert_close(
-                    layer.forward_cpu(value), expected,
-                    atol=precision[dtype], rtol=precision[dtype],
+                    layer.forward_cpu(value),
+                    expected,
+                    atol=precision[dtype],
+                    rtol=precision[dtype],
                 )
 
     @torch.no_grad()
