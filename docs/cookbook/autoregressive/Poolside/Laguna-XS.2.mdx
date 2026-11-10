@@ -1,7 +1,7 @@
 ---
 title: Laguna-XS.2
 metatags:
-    description: "Deploy Poolside's Laguna-XS.2 hybrid SWA + MoE model with SGLang on NVIDIA H200 / B200 — agentic coding with hybrid reasoning and tool calling."
+    description: "Deploy Poolside's Laguna-XS.2 hybrid SWA + MoE model with SGLang on NVIDIA H200 / B200 or Intel XPU with NVFP4 weight-only execution."
 ---
 
 ## 1. Model Introduction
@@ -81,11 +81,35 @@ import { LagunaXS2Deployment } from '/src/snippets/autoregressive/laguna-xs2-dep
 ### 3.2 Configuration Tips
 
 - **Trust remote code** (`--trust-remote-code`): Laguna-XS.2 ships custom modeling/config code on the Hugging Face Hub, so this flag is required for the server to load the model.
-- **Quantization**: NVFP4 requires Blackwell (B200 / B300); BF16 and FP8 run on either H200 or B200. FP8's first launch triggers a multi-session DeepGEMM JIT pre-compile (~10-20 min); pre-warm with `python3 -m sglang.compile_deep_gemm --model poolside/Laguna-XS.2-FP8` to avoid that cost on every restart.
+- **Quantization**: The CUDA NVFP4 recipes require Blackwell (B200 / B300); BF16 and FP8 run on either H200 or B200. Intel XPU weight-only NVFP4 execution uses the separate recipe below. FP8's first launch triggers a multi-session DeepGEMM JIT pre-compile (~10-20 min); pre-warm with `python3 -m sglang.compile_deep_gemm --model poolside/Laguna-XS.2-FP8` to avoid that cost on every restart.
 - **Reasoning parser** (`--reasoning-parser poolside_v1`): Splits `<think>...</think>` segments into `reasoning_content` so `content` holds only the final answer. Disable only if you want the raw `<think>` tags in `content`.
 - **Tool call parser** (`--tool-call-parser poolside_v1`): Required for OpenAI-compatible tool-call streaming. Disable only for chat-only deployments.
 - **DP attention**: For higher-throughput deployments, enable the DP-Attention toggle — it emits `--attn-dp-size <N>` with `--attn-dp-size` matching `--tp` (tune independently if needed).
 - **Thinking default**: Thinking is **off by default** at the model level. Opt in per request with `extra_body={"chat_template_kwargs": {"enable_thinking": True}}`.
+
+### 3.3 Intel XPU: NVFP4 TP=1
+
+Use an Intel XPU runtime and a SGLang source build containing the XPU NVFP4 dense and routed-expert schemes. The CUDA wheels and images above do not provide this runtime. The original `poolside/Laguna-XS.2-NVFP4` checkpoint was checked independently on Linux with one Arc Pro B60 (24 GiB), PyTorch `2.14.0+xpu`, transformers `5.19.0`, and `sglang-kernel-xpu` `0.4.0`.
+
+```bash Command
+python -m sglang.launch_server \
+  --model-path poolside/Laguna-XS.2-NVFP4 \
+  --served-model-name poolside/Laguna-XS.2-NVFP4 \
+  --device xpu --tp-size 1 --host 127.0.0.1 --port 30000 \
+  --attention-backend intel_xpu --linear-attn-backend intel_xpu \
+  --trust-remote-code \
+  --reasoning-parser poolside_v1 --tool-call-parser poolside_v1 \
+  --mem-fraction-static 0.98 --max-running-requests 1 \
+  --disable-radix-cache --disable-overlap-schedule \
+  --chunked-prefill-size 1024 --context-length 8192 \
+  --model-loader-extra-config '{"enable_multithread_load":false}'
+```
+
+Original E2M1 packed weights, FP8 group-16 scales, and FP32 global divisors remain on XPU. The correctness-oriented implementation dequantizes only active projections or experts on device, with no full-model BF16 expansion or CPU model forward. BF16 activations follow SGLang's pre-Blackwell CUDA W4A16 execution semantics; this is **not native FP4 hardware acceleration or W4A4 execution**.
+
+The checked configuration requires TP=1/EP=1 and plain gated SiLU. Compared with the CUDA recipes, it uses Intel attention and linear-attention backends, disables optional radix caching and overlap scheduling, and limits context and concurrency to fit this card.
+
+Ten curl fixtures checked text, arithmetic, JSON extraction, thinking on/off, normal and streamed tools, streamed reasoning, and code generation. Use `temperature=1.0`, `top_p=1.0`, `min_p=0.0`, and up to 4096 output tokens for those checks; the published XS.2 generation configuration does not specify `top_k`. Maximum advertised context, performance, and optional speculative or cache-enabled modes were not validated.
 
 ## 4. Model Invocation
 
