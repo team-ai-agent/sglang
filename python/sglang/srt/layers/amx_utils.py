@@ -86,6 +86,9 @@ def dim_is_supported(weight):
     TILE_N = 16
     TILE_K = 32
     ndim = weight.ndim
+    if ndim == 5:
+        # Conv3d packs spatial tiles rather than input-channel tiles.
+        return weight.size(0) % 32 == 0 and (weight.size(3) * weight.size(4)) % 32 == 0
     OC = weight.size(1) if ndim == 3 else weight.size(0)
     IC = weight.size(2) if ndim == 3 else weight.size(1)
     is_oc_support = OC < TILE_N or OC % TILE_N == 0
@@ -94,6 +97,8 @@ def dim_is_supported(weight):
 
 
 def dtype_is_supported(weight):
+    if weight.ndim == 5:
+        return weight.dtype in (torch.float16, torch.bfloat16)
     return weight.dtype in [
         torch.float16,
         torch.bfloat16,
@@ -149,14 +154,14 @@ def _amx_process_weight_after_loading(
             if transpose_dims and transpose_dims[i]:
                 weight_tensor = weight_tensor.transpose(*transpose_dims[i])
             is_conv_weight = is_dim_conv_weight(weight_tensor)
-            # Depthwise Conv1d has its own layout; Conv3d needs AMX GEMM dimensions.
+            # Depthwise Conv1d has its own packing constraints.
             if (
                 (not dim_is_supported(weight_tensor))
                 or not dtype_is_supported(weight_tensor)
             ) and (not is_conv_weight or weight_tensor.dim() == 5):
                 logger.warning(
                     f"Unsupported dimension or dtype for prepacking for weight '{weight_name}' with shape {weight_tensor.shape} and dtype {weight_tensor.dtype} in {module}. "
-                    f"The derived (OC, IC) dimensions must be divisible by (16, 32). "
+                    "Check the CPU packing kernel's dimension and dtype requirements."
                 )
                 module.use_intel_amx_backend = False
                 return
