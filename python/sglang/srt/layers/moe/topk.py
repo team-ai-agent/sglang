@@ -1249,6 +1249,29 @@ def fused_topk_cpu(
     if correction_bias is not None and correction_bias.dtype != torch.float32:
         correction_bias = correction_bias.to(torch.float32)
 
+    # The CPU kernels specialize a fixed set of expert counts.
+    supported_experts = (1, 2, 4, 8, 16, 32, 64, 128, 160, 256, 384, 512)
+    if gating_output.shape[-1] not in supported_experts and not (
+        scoring_func == "softmax" and gating_output.shape[-1] == 2560
+    ):
+        if not 0 < topk <= gating_output.shape[-1]:
+            raise ValueError("topk must satisfy 0 < topk <= num_experts")
+        if hidden_states.shape[0] != gating_output.shape[0]:
+            raise ValueError("Number of tokens mismatch")
+        if correction_bias is not None and correction_bias.shape != (
+            gating_output.shape[-1],
+        ):
+            raise ValueError("correction_bias must have shape (num_experts,)")
+        topk_weights, topk_ids = fused_topk_torch_native(
+            hidden_states,
+            gating_output.float(),
+            topk,
+            renormalize,
+            correction_bias=correction_bias,
+            scoring_func=scoring_func,
+        )
+        return topk_weights.to(torch.float32), topk_ids.to(torch.int32)
+
     if scoring_func == "softmax":
         topk_weights, topk_ids = torch.ops.sgl_kernel.topk_softmax_cpu(
             hidden_states=hidden_states,
