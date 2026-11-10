@@ -37,8 +37,10 @@ class TestUnquantizedLinearStrides(unittest.TestCase):
                     actual = method.apply(layer, value, layer.bias)
                     self.assertEqual(actual.dtype, value.dtype)
                     torch.testing.assert_close(
-                        actual, expected,
-                        atol=precision[value.dtype], rtol=precision[value.dtype],
+                        actual,
+                        expected,
+                        atol=precision[value.dtype],
+                        rtol=precision[value.dtype],
                     )
 
 
