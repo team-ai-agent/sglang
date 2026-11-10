@@ -42,6 +42,7 @@ class HermesDetector(BaseFormatDetector):
         normal_text = text[:idx].strip() if idx != -1 else text
         if self.bot_token not in text:
             return StreamingParseResult(normal_text=normal_text, calls=[])
+        normal_text = normal_text.removesuffix("<tool_calls>").rstrip()
 
         calls = []
         try:
@@ -65,13 +66,12 @@ class HermesDetector(BaseFormatDetector):
 
         self._normal_text_buffer += text
 
-        if self.eot_token in self._normal_text_buffer:
-            cleaned = self._normal_text_buffer.replace(self.eot_token, "")
-            self._normal_text_buffer = ""
-            return cleaned
-
-        partial_len = self._ends_with_partial_token(
-            self._normal_text_buffer, self.eot_token
+        delimiters = (self.eot_token, "<tool_calls>", "</tool_calls>")
+        for delimiter in delimiters:
+            self._normal_text_buffer = self._normal_text_buffer.replace(delimiter, "")
+        partial_len = max(
+            self._ends_with_partial_token(self._normal_text_buffer, delimiter)
+            for delimiter in delimiters
         )
         if partial_len:
             safe_text = self._normal_text_buffer[:-partial_len]
@@ -105,7 +105,9 @@ class HermesDetector(BaseFormatDetector):
         if bot_pos > 0:
             normal_text = current_text[:bot_pos]
             self._buffer = current_text[bot_pos:]
-            return StreamingParseResult(normal_text=normal_text)
+            return StreamingParseResult(
+                normal_text=self._clean_normal_text(normal_text)
+            )
 
         result = super().parse_streaming_increment(new_text="", tools=tools)
         if result.normal_text:
