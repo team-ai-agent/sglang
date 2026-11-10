@@ -103,6 +103,23 @@ This section provides deployment configurations optimized for different hardware
 
 <Qwen36Deployment />
 
+### Intel Arc Pro B-Series (BMG): 35B-A3B BF16
+
+Select **BMG** for the BF16 `Qwen/Qwen3.6-35B-A3B` recipe on four
+Intel Arc Pro B-Series GPUs(codename: BMG (Battlemage)), with 24GB per card.
+Only Tensor Parallel (TP) is supported on this hardware. The recipe uses
+`intel_xpu` for both attention backends and page size 1 for the hybrid GDN
+no-buffer cache path.
+
+Basic text generation was checked on upstream SGLang commit
+`d50f98e7f8c281d6451935b2a475009f94201549`. The recipe preserves the checked
+16,384-token context limit, static memory fraction 0.8, and four concurrent
+request slots. It does not establish full-context, multimodal, tool-calling,
+speculative-decoding, or benchmark accuracy support. FP8, NVFP4, and the 27B
+variant are not included in this BMG recipe.
+
+For installation, follow the [Intel XPU guide](/docs/hardware-platforms/xpu).
+
 ### RTX Spark: 35B-A3B NVFP4
 
 Select **RTX Spark** in the generator above to use the single-node, single-GPU recipe for
