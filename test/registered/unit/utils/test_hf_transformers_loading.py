@@ -30,8 +30,61 @@ from sglang.srt.hf_transformers import (
 from sglang.srt.hf_transformers.config import POINTER_ADAPTER_BASES
 from sglang.srt.utils.patch_tokenizer import unpatch_tokenizer
 from sglang.test.ci.ci_register import register_cpu_ci
+from sglang.test.test_utils import CustomTestCase
+
+try:
+    from transformers import Gemma4UnifiedConfig
+except ImportError:
+    Gemma4UnifiedConfig = None
 
 register_cpu_ci(est_time=6, suite="base-a-test-cpu")
+
+
+@unittest.skipIf(
+    Gemma4UnifiedConfig is None, "Requires native Transformers unified Gemma4 config"
+)
+class TestGemma4UnifiedLoading(CustomTestCase):
+    def test_native_unified_subconfigs_preserve_derived_patch_and_audio_shapes(self):
+        """Unified checkpoints without redundant fields retain native multimodal geometry."""
+        with tempfile.TemporaryDirectory() as directory:
+            Path(directory, "config.json").write_text(
+                json.dumps(
+                    {
+                        "model_type": "gemma4_unified",
+                        "architectures": ["Gemma4UnifiedForConditionalGeneration"],
+                        "text_config": {
+                            "model_type": "gemma4_unified_text",
+                            "vocab_size": 32,
+                            "hidden_size": 16,
+                            "intermediate_size": 32,
+                            "num_hidden_layers": 2,
+                            "num_attention_heads": 2,
+                            "num_key_value_heads": 1,
+                            "head_dim": 8,
+                            "global_head_dim": 8,
+                            "layer_types": ["sliding_attention", "full_attention"],
+                        },
+                        "vision_config": {
+                            "model_type": "gemma4_unified_vision",
+                            "patch_size": 16,
+                            "pooling_kernel_size": 3,
+                            "mm_embed_dim": 32,
+                            "mm_posemb_size": 16,
+                        },
+                        "audio_config": {
+                            "model_type": "gemma4_unified_audio",
+                            "audio_embed_dim": 640,
+                        },
+                    }
+                )
+            )
+            config = get_config(
+                directory, trust_remote_code=False, local_files_only=True
+            )
+            self.assertIsInstance(config, Gemma4UnifiedConfig)
+            self.assertEqual(config.vision_config.model_patch_size, 48)
+            self.assertEqual(config.audio_config.output_proj_dims, 640)
+            self.assertEqual(config.audio_config.audio_samples_per_token, 640)
 
 
 class TestHFTransformersLoading(unittest.TestCase):
