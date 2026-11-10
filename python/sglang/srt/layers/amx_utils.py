@@ -149,11 +149,11 @@ def _amx_process_weight_after_loading(
             if transpose_dims and transpose_dims[i]:
                 weight_tensor = weight_tensor.transpose(*transpose_dims[i])
             is_conv_weight = is_dim_conv_weight(weight_tensor)
-            # We don't pack weight or use intel amx backend if any weight of this module has unsupported dim.
+            # Depthwise Conv1d has its own layout; Conv3d needs AMX GEMM dimensions.
             if (
                 (not dim_is_supported(weight_tensor))
                 or not dtype_is_supported(weight_tensor)
-            ) and (not is_conv_weight):
+            ) and (not is_conv_weight or weight_tensor.dim() == 5):
                 logger.warning(
                     f"Unsupported dimension or dtype for prepacking for weight '{weight_name}' with shape {weight_tensor.shape} and dtype {weight_tensor.dtype} in {module}. "
                     f"The derived (OC, IC) dimensions must be divisible by (16, 32). "
