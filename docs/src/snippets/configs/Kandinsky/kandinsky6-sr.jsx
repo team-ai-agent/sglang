@@ -1,9 +1,10 @@
 export const config = {
   modelName: "Kandinsky 6.0 SR",
-  supportedHardware: ["gb300", "b200", "h200", "h100", "rtxpro6000", "rtx5090"],
+  supportedHardware: ["gb300", "b200", "h200", "h100", "rtxpro6000", "rtx5090", "arc_b"],
   hardware: [
     { id: "rtxpro6000", label: "RTX PRO 6000", vram: "96GB", vendor: "blackwell" },
     { id: "rtx5090", label: "RTX 5090", vram: "32GB", vendor: "blackwell" },
+    { id: "arc_b", label: "BMG", vram: "24GB", vendor: "intel" },
   ],
   groupHardware: false,
   matchDims: [],
@@ -14,10 +15,10 @@ export const config = {
       learnMore: "#5-memory-and-parallelism",
       options: [
         { id: "platform", label: "Recipe default", recommended: true,
-          description: "SDPA on RTX; FA on datacenter Blackwell and Hopper." },
+          description: "SDPA on RTX and BMG; FA on datacenter Blackwell and Hopper." },
         { id: "fa", label: "FlashAttention",
-          disabled: (s) => ["rtxpro6000", "rtx5090"].includes(s.hw),
-          disableReason: "This SM120 platform maps FA to SDPA; select SDPA explicitly instead." },
+          disabled: (s) => ["rtxpro6000", "rtx5090", "arc_b"].includes(s.hw),
+          disableReason: "This platform maps FA to SDPA; select SDPA explicitly instead." },
         { id: "torch_sdpa", label: "PyTorch SDPA",
           soft: (s) => s.hw !== "rtxpro6000",
           softReason: "SDPA measurements apply to RTX PRO 6000, not every GPU or workload.",
@@ -121,10 +122,10 @@ export const config = {
         { id: "gb300-ulysses4-offline", hw: "gb300", nodes: 1, gpus_per_node: 4,
           tp_size: 1, ulysses_degree: 4, ring_degree: 1, placement: "resident",
           decode: "tiles", default: true, unverified: true },
-        ...["b200", "h200", "h100", "rtxpro6000", "rtx5090"].map((hw) => ({
+        ...["b200", "h200", "h100", "rtxpro6000", "rtx5090", "arc_b"].map((hw) => ({
           id: `${hw}-single-gpu`, hw, nodes: 1, gpus_per_node: 1,
           tp_size: 1, ulysses_degree: 1, ring_degree: 1,
-          placement: hw === "rtx5090" ? "offload" : "resident",
+          placement: ["rtx5090", "arc_b"].includes(hw) ? "offload" : "resident",
           decode: "serial", default: true, unverified: hw !== "rtxpro6000",
         })),
         { id: "rtxpro6000-ulysses2-tiles", hw: "rtxpro6000", nodes: 1, gpus_per_node: 2,
@@ -147,9 +148,9 @@ export const config = {
           errors.push("TP times Ulysses must divide the 28 DiT heads.");
         if (s.placement === "fsdp" && Number(s.gpus_per_node) < 2)
           errors.push("FSDP requires multiple GPUs.");
-        if ((s.attention === "torch_sdpa" || ["rtxpro6000", "rtx5090"].includes(s.hw)) && t.ring_degree > 1)
+        if ((s.attention === "torch_sdpa" || ["rtxpro6000", "rtx5090", "arc_b"].includes(s.hw)) && t.ring_degree > 1)
           errors.push("SDPA does not support Ring rotation.");
-        if (s.attention === "fa" && ["rtxpro6000", "rtx5090"].includes(s.hw))
+        if (s.attention === "fa" && ["rtxpro6000", "rtx5090", "arc_b"].includes(s.hw))
           errors.push("FA resolves to SDPA on this SM120 platform; select SDPA instead.");
         return errors;
       },
@@ -160,7 +161,7 @@ export const config = {
         ? { tp_size: Number(s.tp_size), ulysses_degree: Number(s.ulysses_degree), ring_degree: Number(s.ring_degree) }
         : resource.autoTopology(s);
       const errors = resource.validateTopology(s, topology);
-      const platformAttention = ["rtxpro6000", "rtx5090"].includes(s.hw) ? "torch_sdpa" : "fa";
+      const platformAttention = ["rtxpro6000", "rtx5090", "arc_b"].includes(s.hw) ? "torch_sdpa" : "fa";
       const attention = s.attention === "platform" ? platformAttention : s.attention;
       const streamingDit = s.placement === "offload" && (s.offload_components === "all" || s.offload_components.includes("transformer"));
       const gb300Served = s.hw === "gb300" && attention === "fa" && (
@@ -201,10 +202,20 @@ export const config = {
       return {
         match: { hw: s.hw }, nnodes: Number(s.nodes), verified: false,
         flags: [
-          "--model-path {{MODEL_NAME}}", `--num-gpus ${Number(s.gpus_per_node)}`,
-          `--tp-size ${topology.tp_size}`, `--ulysses-degree ${topology.ulysses_degree}`,
-          `--ring-degree ${topology.ring_degree}`, "--performance-mode speed",
-          `--attention-backend ${attention}`, "--warmup-mode off", "--host {{HOST_IP}}", "--port {{PORT}}",
+          "--model-path {{MODEL_NAME}}",
+          ...(s.hw !== "arc_b" || Number(s.gpus_per_node) > 1
+            ? [
+                `--num-gpus ${Number(s.gpus_per_node)}`,
+                `--tp-size ${topology.tp_size}`,
+                `--ulysses-degree ${topology.ulysses_degree}`,
+                `--ring-degree ${topology.ring_degree}`,
+              ]
+            : []),
+          "--performance-mode speed",
+          `--attention-backend ${attention}`,
+          "--warmup-mode off",
+          "--host {{HOST_IP}}",
+          "--port {{PORT}}",
           ...(streamingDit && Number(s.prefetch) !== 1 ? [`--dit-offload-prefetch-size ${s.prefetch}`] : []),
           ...(streamingDit && Number(s.resident_layers) !== 0 ? [`--dit-layerwise-resident-layers ${s.resident_layers}`] : []),
         ],
