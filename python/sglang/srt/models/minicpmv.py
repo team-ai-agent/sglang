@@ -1770,6 +1770,15 @@ class MiniCPMV:
             return None
         return getattr(self.minicpmv, name)
 
+    @property
+    def shared_experts_config(self):
+        return self.minicpmv.shared_experts_config
+
+    @shared_experts_config.setter
+    def shared_experts_config(self, value):
+        # eval() unwraps this adapter, so runner metadata must live on the model.
+        self.minicpmv.shared_experts_config = value
+
     def __call__(self, *args, **kwargs):
         return self.minicpmv(*args, **kwargs)
 
