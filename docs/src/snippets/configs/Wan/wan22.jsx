@@ -1,6 +1,6 @@
 export const config = (() => {
   const modelOf = (s) =>
-    ({
+    s.hw === "arc_b" ? "Wan-AI/Wan2.2-TI2V-5B-Diffusers" : ({
       "t2v-14b": "Wan-AI/Wan2.2-T2V-A14B-Diffusers",
       "i2v-14b": "Wan-AI/Wan2.2-I2V-A14B-Diffusers",
       "ti2v-5b": "Wan-AI/Wan2.2-TI2V-5B-Diffusers",
@@ -9,12 +9,17 @@ export const config = (() => {
     const small = !s.variant.endsWith("14b");
     const ascend = ["a2", "a3"].includes(s.hw);
     const xeon = s.hw === "xeon";
+    const bmg = s.hw === "arc_b";
     const fast = ascend ? Number(s.gpus_per_node) === 8 : Number(s.gpus_per_node) > 1;
     let gpus = 1,
       tp = 1,
       sp = 1;
     const flags = ["--model-path " + modelOf(s)];
-    if (ascend) {
+    if (bmg) {
+      gpus = 4;
+      tp = 4;
+      flags.push("--num-gpus 4", "--tp-size 4", "--attention-backend fa", "--component-residency all=resident");
+    } else if (ascend) {
       if (small) {
         gpus = fast ? 8 : s.hw === "a2" ? 1 : 2;
         sp = gpus;
@@ -50,12 +55,20 @@ export const config = (() => {
       "t2v-14b": "Cseti/wan2.2-14B-Arcane_Jinx-lora-v1",
       "i2v-14b": "lightx2v/Wan2.2-Distill-Loras",
     }[s.variant];
-    if (!xeon && s.lora === s.variant && lora) flags.push("--lora-path " + lora);
+    if (!xeon && !bmg && s.lora === s.variant && lora) flags.push("--lora-path " + lora);
     return {
       flags,
       gpus,
       topology: { tp_size: tp, ulysses_degree: sp, ring_degree: 1 },
-      env: xeon ? ["SGLANG_DIFFUSION_PLATFORM_OVERRIDE=cpu"] : [],
+      env: bmg ? [
+        "UR_L0_USE_COPY_ENGINE=0",
+        "UR_L0_USE_IMMEDIATE_COMMANDLISTS=0",
+        "UR_L0_USE_DRIVER_COUNTER_BASED_EVENTS=0",
+        "UR_L0_DISABLE_EVENTS_CACHING=1",
+        "SGLANG_DIFFUSION_PLATFORM_OVERRIDE=xpu",
+      ] : xeon ? ["SGLANG_DIFFUSION_PLATFORM_OVERRIDE=cpu"] : [],
+      errors: bmg && (s.variant !== "ti2v-5b" || s.lora !== "none")
+        ? ["BMG covers only TI2V 5B text-to-video without LoRA."] : [],
       warnings: ascend ? ["Ascend recipes count NPU chips; one A3 card has two chips."] : [],
     };
   };
@@ -72,11 +85,12 @@ export const config = (() => {
   };
   const config = {
     modelName: "Wan2.2",
-    supportedHardware: ["b200", "b300", "h200", "mi300x", "mi325x", "mi355x", "a2", "a3", "xeon"],
+    supportedHardware: ["b200", "b300", "h200", "mi300x", "mi325x", "mi355x", "a2", "a3", "xeon", "arc_b"],
     hardware: [
       { id: "a2", label: "Ascend A2", vram: "", vendor: "npu" },
       { id: "a3", label: "Ascend A3", vram: "2 NPUs / card", vendor: "npu" },
       { id: "xeon", label: "XEON", vram: "CPU", vendor: "cpu" },
+      { id: "arc_b", label: "BMG", vram: "4 x 24 GB", vendor: "intel" },
     ],
     groupHardware: false,
     matchDims: [],
@@ -87,8 +101,8 @@ export const config = (() => {
         scope: "base",
         default: "t2v-14b",
         options: [
-          { id: "t2v-14b", label: "T2V A14B" },
-          { id: "i2v-14b", label: "I2V A14B" },
+          { id: "t2v-14b", label: "T2V A14B", disabled: (s) => s.hw === "arc_b", disableReason: "Only TI2V 5B text-to-video was validated on BMG." },
+          { id: "i2v-14b", label: "I2V A14B", disabled: (s) => s.hw === "arc_b", disableReason: "Only TI2V 5B text-to-video was validated on BMG." },
           { id: "ti2v-5b", label: "TI2V 5B" },
         ],
       },
@@ -103,7 +117,7 @@ export const config = (() => {
             id: "t2v-14b",
             label: "Cseti/wan2.2-14B-Arcane_Jinx-lora-v1",
             showWhen: function anonymous(s) {
-              return s.variant === "t2v-14b";
+              return s.variant === "t2v-14b" && s.hw !== "arc_b";
             },
             disabled: (s) => s.hw === "xeon",
             disableReason: "LoRA is not supported on Intel Xeon CPUs.",
@@ -112,7 +126,7 @@ export const config = (() => {
             id: "i2v-14b",
             label: "lightx2v/Wan2.2-Distill-Loras",
             showWhen: function anonymous(s) {
-              return s.variant === "i2v-14b";
+              return s.variant === "i2v-14b" && s.hw !== "arc_b";
             },
             disabled: (s) => s.hw === "xeon",
             disableReason: "LoRA is not supported on Intel Xeon CPUs.",
@@ -125,10 +139,10 @@ export const config = (() => {
       resource: {
         limits: {
           nodes: { min: 1, max: 1 },
-          gpus_per_node: { min: 1, max: 8, disabledWhen: (s) => s.hw === "xeon", disabledValue: 1 },
+          gpus_per_node: { min: 1, max: 8, disabledWhen: (s) => s.hw === "xeon", disabledValue: 1, allowedValues: (s) => s.hw === "arc_b" ? [4] : [] },
         },
-        verifiedRecipes: ["b200", "b300", "h200", "mi300x", "mi325x", "mi355x", "a2", "a3", "xeon"].map((hw) => {
-          const s = { ...defaults, hw };
+        verifiedRecipes: ["b200", "b300", "h200", "mi300x", "mi325x", "mi355x", "a2", "a3", "xeon", "arc_b"].map((hw) => {
+          const s = { ...defaults, hw, ...(hw === "arc_b" ? { variant: "ti2v-5b" } : {}) };
           const p = plan(s);
           return {
             ...s,
@@ -187,7 +201,9 @@ export const config = (() => {
             errors,
             warnings: [
               ...(p.warnings || []),
-              "Documented recipe; this exact server and request combination has not been HTTP-verified.",
+              s.hw === "arc_b"
+                ? "BMG scope: the default text-to-video request only; no I2V or LoRA validation."
+                : "Documented recipe; this exact server and request combination has not been HTTP-verified.",
             ],
             verification: { serve: status, request: status },
           },

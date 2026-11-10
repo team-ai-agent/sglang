@@ -151,7 +151,7 @@ test("Wan preserves standard, multi-GPU, Ascend and LoRA recipes", () => {
   for (const version of ["1", "2"]) {
     const config = get(`/Wan/Wan2.${version}.mdx`);
     assert.equal(config.overlayDims.find((dim) => dim.id === "variant").options.length, 3);
-    for (const hw of config.supportedHardware.filter((id) => !["a2", "a3", "xeon"].includes(id))) {
+    for (const hw of config.supportedHardware.filter((id) => !["a2", "a3", "xeon", "arc_b"].includes(id))) {
       const gpus = version === "2" && hw === "b300" ? 8 : 4;
       const result = resolve(config, { hw, gpus_per_node: gpus });
       assert.deepEqual(result.builder.errors, []);
