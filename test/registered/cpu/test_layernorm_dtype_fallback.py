@@ -6,7 +6,7 @@ import torch.nn.functional as F
 from sglang.srt.layers.layernorm import LayerNorm
 from sglang.test.ci.ci_register import register_cpu_ci
 
-register_cpu_ci(est_time=5, suite="stage-a-test-cpu")
+register_cpu_ci(est_time=5, suite="stage-a-test-cpu-intel")
 
 
 class TestLayerNormCpuDtype(unittest.TestCase):
