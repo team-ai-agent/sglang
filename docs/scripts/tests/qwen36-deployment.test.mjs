@@ -59,7 +59,7 @@ test('non-XPU commands remain byte-identical across every legal selector combina
   }
 });
 
-test('BMG emits only the validated BF16 TP4 GDN recipe', () => {
+test('BMG defaults to the validated BF16 TP4 GDN recipe', () => {
   const state = render({}).getUpdatedValues(initial, 'hardware', 'arc_b');
   const { options, generateCommand } = render(state);
   assert.equal(state.modelSize, '35b-a3b');
@@ -69,7 +69,7 @@ test('BMG emits only the validated BF16 TP4 GDN recipe', () => {
   for (const name of ['reasoning', 'toolcall', 'mambaCache']) {
     assert.equal(options[name].condition(state), false);
   }
-  assert.deepEqual(itemsOf(options.quantization, state).map((item) => item.id), ['bf16']);
+  assert.deepEqual(itemsOf(options.quantization, state).map((item) => item.id), ['bf16', 'fp8']);
 });
 
 test('BMG resets incompatible state and rejects disabled selections', () => {
@@ -80,7 +80,7 @@ test('BMG resets incompatible state and rejects disabled selections', () => {
   };
   const bmg = getUpdatedValues(previous, 'hardware', 'arc_b');
   for (const [name, value] of [
-    ['modelSize', '27b'], ['quantization', 'fp8'], ['quantization', 'nvfp4'],
+    ['modelSize', '27b'], ['quantization', 'nvfp4'],
     ['speculative', 'enabled'], ['mambaCache', 'v2'],
   ]) {
     assert.deepEqual(getUpdatedValues(bmg, name, value), bmg);
@@ -88,4 +88,13 @@ test('BMG resets incompatible state and rejects disabled selections', () => {
   const h100 = getUpdatedValues(bmg, 'hardware', 'h100');
   assert.match(render(h100).generateCommand(), /--model-path Qwen\/Qwen3.6-35B-A3B/);
   assert.doesNotMatch(render(h100).generateCommand(), /--device xpu|intel_xpu|--page-size 1/);
+});
+
+test('BMG FP8 emits only its separately validated bounded recipe', () => {
+  const { getUpdatedValues } = render({});
+  const bmg = getUpdatedValues(initial, 'hardware', 'arc_b');
+  const fp8 = getUpdatedValues(bmg, 'quantization', 'fp8');
+  assert.equal(render(fp8).generateCommand(), 'UR_L0_USE_COPY_ENGINE=0 sglang serve --model-path Qwen/Qwen3.6-35B-A3B-FP8 \\\n  --device xpu --attention-backend intel_xpu \\\n  --tp 4 --linear-attn-backend intel_xpu --page-size 1 \\\n  --context-length 16384 --mem-fraction-static 0.8 --max-running-requests 4');
+  assert.deepEqual(getUpdatedValues(fp8, 'modelSize', '27b'), fp8);
+  assert.deepEqual(getUpdatedValues(fp8, 'speculative', 'enabled'), fp8);
 });

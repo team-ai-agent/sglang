@@ -32,7 +32,7 @@ export const Qwen36Deployment = () => {
       getDynamicItems: (values) => [
         { id: '35b-a3b', label: '35B-A3B (MoE)', default: true },
         { id: '27b', label: '27B (Dense)', default: false, disabled: values.hardware === 'rtx-spark' || values.hardware === 'arc_b',
-          disabledReason: values.hardware === 'arc_b' ? 'Only 35B-A3B BF16 is validated on BMG' : values.hardware === 'rtx-spark' ? 'Only 35B-A3B NVFP4 is validated on RTX Spark' : '' },
+          disabledReason: values.hardware === 'arc_b' ? 'Only 35B-A3B is validated on BMG' : values.hardware === 'rtx-spark' ? 'Only 35B-A3B NVFP4 is validated on RTX Spark' : '' },
       ],
     },
     quantization: {
@@ -42,7 +42,10 @@ export const Qwen36Deployment = () => {
       // Ascend NPU deployment offers BF16 for both model sizes.
       // RTX Spark only has a validated NVFP4 recipe (35B-A3B).
       getDynamicItems: (values) => {
-        if (values.hardware === 'a3' || values.hardware === 'arc_b') {
+        if (values.hardware === 'arc_b') {
+          return [{ id: 'bf16', label: 'BF16', default: true }, { id: 'fp8', label: 'FP8', default: false }];
+        }
+        if (values.hardware === 'a3') {
           return [{ id: 'bf16', label: 'BF16', default: true }];
         }
         if (values.hardware === 'rtx-spark') {
@@ -223,8 +226,11 @@ export const Qwen36Deployment = () => {
     const sizeConfig = modelConfigs[modelSize];
 
     if (hardware === 'arc_b') {
-      if (modelSize !== '35b-a3b' || quantization !== 'bf16' || speculative !== 'disabled') {
-        return '# Select the validated BMG 35B-A3B BF16 configuration';
+      if (modelSize !== '35b-a3b' || !['bf16', 'fp8'].includes(quantization) || speculative !== 'disabled') {
+        return '# Select the validated BMG 35B-A3B BF16 or FP8 configuration';
+      }
+      if (quantization === 'fp8') {
+        return 'UR_L0_USE_COPY_ENGINE=0 sglang serve --model-path Qwen/Qwen3.6-35B-A3B-FP8 \\\n  --device xpu --attention-backend intel_xpu \\\n  --tp 4 --linear-attn-backend intel_xpu --page-size 1 \\\n  --context-length 16384 --mem-fraction-static 0.8 --max-running-requests 4';
       }
       return 'sglang serve --model-path Qwen/Qwen3.6-35B-A3B \\\n  --device xpu --attention-backend intel_xpu \\\n  --tp 4 --linear-attn-backend intel_xpu --page-size 1 \\\n  --context-length 16384 --mem-fraction-static 0.8 --max-running-requests 4';
     }
