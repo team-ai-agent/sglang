@@ -655,6 +655,29 @@ class TestGemma4Detector(CustomTestCase):
     def setUp(self):
         self.detector = Gemma4Detector()
 
+    def test_thinking_hint_does_not_swallow_markerless_final_answer(self):
+        """A thinking-enabled Gemma request may still emit a direct final answer."""
+        cases = (
+            ("4", ""),
+            (
+                "<|channel>thought\nTwo plus two is four.<channel|>4",
+                "Two plus two is four.",
+            ),
+        )
+        for text, reasoning in cases:
+            with self.subTest(text=text, streaming=False):
+                detector = Gemma4Detector(force_reasoning=True)
+                result = detector.detect_and_parse(text)
+                self.assertEqual(result.normal_text, "4")
+                self.assertEqual(result.reasoning_text, reasoning)
+            with self.subTest(text=text, streaming=True):
+                detector = Gemma4Detector(force_reasoning=True)
+                parts = [detector.parse_streaming_increment(char) for char in text]
+                self.assertEqual("".join(part.normal_text for part in parts), "4")
+                self.assertEqual(
+                    "".join(part.reasoning_text for part in parts), reasoning
+                )
+
     def test_detect_and_parse_complete_reasoning(self):
         """Test parsing complete Gemma4 reasoning block (think_start_self_label is stripped)."""
         text = "<|channel>thought\nLet me think about this<channel|>The answer is 42."

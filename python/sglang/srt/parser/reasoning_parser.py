@@ -1365,7 +1365,8 @@ class Gemma4Detector(BaseReasoningFormatDetector):
         super().__init__(
             "<|channel>",
             "<channel|>",
-            force_reasoning=force_reasoning,
+            # The system thinking hint does not prefill an assistant channel.
+            force_reasoning=False,
             stream_reasoning=stream_reasoning,
             continue_final_message=continue_final_message,
             previous_content=previous_content,
