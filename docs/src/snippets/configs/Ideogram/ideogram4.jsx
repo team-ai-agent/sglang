@@ -8,13 +8,20 @@ export const config = (() => {
       instant: "fal/ideogram-v4-instant",
     })[s.checkpoint || "nf4"];
   const plan = (s) => {
-    const flags = ["--model-path " + modelOf(s), ...["--num-gpus 1", "--performance-mode auto", "--port {{PORT}}"]];
+    const flags = [
+      "--model-path " + modelOf(s),
+      ...(s.hw === "arc_b"
+        ? ["fast", "instant"].includes(s.checkpoint)
+          ? ["--dit-layerwise-offload", "--layerwise-offload-components transformer", "--port {{PORT}}"]
+          : ["--performance-mode auto", "--port {{PORT}}"]
+        : ["--num-gpus 1", "--performance-mode auto", "--port {{PORT}}"]),
+    ];
     let gpus = 1;
     let t = { tp_size: 1, ulysses_degree: 1, ring_degree: 1 };
     const env = [];
     const warnings = [];
     const errors = [];
-    env.push("HF_TOKEN=$HF_TOKEN");
+    if (s.hw !== "arc_b") env.push("HF_TOKEN=$HF_TOKEN");
     if (s.checkpoint === "nvfp4" && s.hw !== "b200")
       errors.push("The documented NVFP4 recipe requires Blackwell; select B200.");
     if (s.checkpoint === "fast")
@@ -35,8 +42,11 @@ export const config = (() => {
   };
   const config = {
     modelName: "Ideogram 4",
-    supportedHardware: ["cuda", "b200"],
-    hardware: [{ id: "cuda", label: "NVIDIA CUDA", vram: "", vendor: "nvidia" }],
+    supportedHardware: ["cuda", "b200", "arc_b"],
+    hardware: [
+      { id: "cuda", label: "NVIDIA CUDA", vram: "", vendor: "nvidia" },
+      { id: "arc_b", label: "BMG", vram: "24GB", vendor: "intel" },
+    ],
     groupHardware: false,
     matchDims: [],
     overlayDims: [
@@ -47,8 +57,8 @@ export const config = (() => {
         default: "nf4",
         options: [
           { id: "nf4", label: "ideogram-4-nf4" },
-          { id: "fp8", label: "ideogram-4-fp8" },
-          { id: "nvfp4", label: "Ideogram-4" },
+          { id: "fp8", label: "ideogram-4-fp8", showWhen: (s) => s.hw !== "arc_b" },
+          { id: "nvfp4", label: "Ideogram-4", showWhen: (s) => s.hw !== "arc_b" },
           { id: "fast", label: "ideogram-v4-fast" },
           { id: "instant", label: "ideogram-v4-instant" },
         ],
@@ -58,7 +68,7 @@ export const config = (() => {
       defaultSelection: defaults,
       resource: {
         limits: { nodes: { min: 1, max: 1 }, gpus_per_node: { min: 1, max: 1 } },
-        verifiedRecipes: ["cuda", "b200"].map((hw) => {
+        verifiedRecipes: ["cuda", "b200", "arc_b"].map((hw) => {
           const s = { ...defaults, hw };
           const p = plan(s);
           return {
