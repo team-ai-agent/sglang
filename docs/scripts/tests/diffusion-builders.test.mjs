@@ -172,6 +172,41 @@ test("Wan preserves standard, multi-GPU, Ascend and LoRA recipes", () => {
   assert.ok(!resolve(get("/Wan/Wan2.2.mdx")).flags.some((flag) => flag.startsWith("--lora-path")));
 });
 
+test("Wan2.1 BMG covers only the validated four-GPU T2V 1.3B recipe", () => {
+  const config = get("/Wan/Wan2.1.mdx");
+  assert.equal(config.supportedHardware.length, 11);
+  const valid = { hw: "arc_b", variant: "t2v-1_3b", lora: "none", gpus_per_node: 4 };
+  const result = resolve(config, valid);
+  assert.deepEqual(result.builder.errors, []);
+  assert.deepEqual(result.builder.topology, { tp_size: 4, ulysses_degree: 1, ring_degree: 1 });
+  assert.deepEqual(result.flags, [
+    "--model-path Wan-AI/Wan2.1-T2V-1.3B-Diffusers",
+    "--num-gpus 4", "--tp-size 4", "--attention-backend fa", "--port {{PORT}}",
+  ]);
+  assert.deepEqual(result.env, [
+    "UR_L0_USE_COPY_ENGINE=0", "UR_L0_USE_IMMEDIATE_COMMANDLISTS=0",
+    "UR_L0_USE_DRIVER_COUNTER_BASED_EVENTS=0", "UR_L0_DISABLE_EVENTS_CACHING=1",
+    "SGLANG_DIFFUSION_PLATFORM_OVERRIDE=xpu",
+  ]);
+  assert.deepEqual(body(config, valid), {
+    model: "Wan-AI/Wan2.1-T2V-1.3B-Diffusers", prompt: "A quiet street at dusk",
+  });
+  assert.deepEqual(config.commandBuilder.resource.limits.gpus_per_node.allowedValues(valid), [4]);
+  for (const overrides of [
+    { variant: "t2v-14b" }, { variant: "i2v-14b" }, { lora: "t2v-14b" },
+    { gpus_per_node: 1 }, { topology_mode: "manual", tp_size: 2 },
+  ]) {
+    assert.ok(resolve(config, { ...valid, ...overrides }).builder.errors.length);
+  }
+  const variants = config.overlayDims.find((dim) => dim.id === "variant").options;
+  assert.equal(variants.find((option) => option.id === "t2v-1_3b").disabled, undefined);
+  for (const id of ["t2v-14b", "i2v-14b"]) {
+    assert.equal(variants.find((option) => option.id === id).disabled(valid), true);
+  }
+  assert.ok(config.overlayDims.find((dim) => dim.id === "lora").options
+    .filter((option) => option.id !== "none").every((option) => !option.showWhen(valid)));
+});
+
 test("LTX request controls do not leak into startup and decoder loading is explicit", () => {
   const config = get("/LTX/LTX2.5.mdx");
   const startup = resolve(config, { decoder_weights: "loaded" });
