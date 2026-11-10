@@ -18,10 +18,13 @@ import pytest
 import torch
 
 from sglang.srt.configs.k2_horizon import K2HorizonConfig, XllmConfig
+from sglang.srt.layers.mova import mova_router_topk
 from sglang.srt.models.xllm import (
     XllmAttention,
     XllmForCausalLM,
     XllmGroupRMSNorm,
+    XllmMoVAAttention,
+    _XllmMoVAAttentionBase,
     _normalize_k2_horizon_config,
     _validate_mova_config,
     _xllm_router_gemm,
@@ -192,6 +195,52 @@ def test_mp2_router_gemm_preserves_source_rounding_order():
     torch.testing.assert_close(_xllm_router_gemm(hidden, weight, 2), expected)
     with pytest.raises(ValueError, match="requires BF16"):
         _xllm_router_gemm(hidden.float(), weight.float(), 2)
+
+
+@pytest.mark.parametrize("source_partitions", [None, 1, 2])
+def test_mova_value_router_keeps_checkpoint_layout_after_loading(
+    monkeypatch, source_partitions
+):
+    def init_attention(self, config, layer_id, quant_config, prefix):
+        torch.nn.Module.__init__(self)
+        self.total_num_kv_heads = 1
+        self.head_dim = 64
+
+    monkeypatch.setattr(_XllmMoVAAttentionBase, "__init__", init_attention)
+    config = SimpleNamespace(
+        hidden_size=64,
+        num_values=16,
+        num_values_per_tok=4,
+        moe_gate_bias=True,
+    )
+    if source_partitions is not None:
+        config.xllm_source_router_gemm_partitions = source_partitions
+    with get_context().parallel.override(
+        attn_tp_rank=0, attn_tp_size=1, attn_tp_group=None
+    ):
+        attention = XllmMoVAAttention(config, layer_id=0)
+    checkpoint = torch.randn(16, 64, dtype=torch.bfloat16)
+    attention.v_router.weight.data = checkpoint.clone()
+    attention.v_router.bias.data.zero_()
+    attention.v_experts.weight.data = torch.randn(16, 64, 64, dtype=torch.bfloat16)
+    hidden = torch.randn(3, 64, dtype=torch.bfloat16)
+
+    # Match the loader's post-load pass, including CPU AMX packing.
+    for module in attention.modules():
+        quant_method = getattr(module, "quant_method", None)
+        if quant_method is not None:
+            quant_method.process_weights_after_loading(module)
+
+    torch.testing.assert_close(attention.v_router.weight, checkpoint, rtol=0, atol=0)
+    weights, selected = mova_router_topk(
+        _xllm_router_gemm(hidden, checkpoint, source_partitions).float(),
+        attention.v_router.bias,
+        score_func="sigmoid",
+        top_k=4,
+        scaling_factor=1.0,
+    )
+    expected = attention.v_experts(hidden, weights, selected)
+    torch.testing.assert_close(attention._project_value(hidden), expected)
 
 
 def test_strict_loader_rejects_unknown_checkpoint_weight():
