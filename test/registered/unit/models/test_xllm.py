@@ -201,6 +201,8 @@ def test_mp2_router_gemm_preserves_source_rounding_order():
 def test_mova_value_router_keeps_checkpoint_layout_after_loading(
     monkeypatch, source_partitions
 ):
+    torch.manual_seed(0)
+
     def init_attention(self, config, layer_id, quant_config, prefix):
         torch.nn.Module.__init__(self)
         self.total_num_kv_heads = 1
@@ -231,6 +233,7 @@ def test_mova_value_router_keeps_checkpoint_layout_after_loading(
         if quant_method is not None:
             quant_method.process_weights_after_loading(module)
 
+    assert isinstance(attention.v_router, torch.nn.Linear)
     torch.testing.assert_close(attention.v_router.weight, checkpoint, rtol=0, atol=0)
     weights, selected = mova_router_topk(
         _xllm_router_gemm(hidden, checkpoint, source_partitions).float(),
