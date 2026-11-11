@@ -1000,6 +1000,19 @@ class CompressedTensorsConfig(QuantizationConfig):
                     and get_moe_runner_backend().is_flashinfer_trtllm()
                 ):
                     return CompressedTensorsMxInt4MoE(self, weight_quant=weight_quant)
+                elif _is_xpu:
+                    if not self._is_wna16_triton_moe_supported(weight_quant):
+                        raise NotImplementedError(
+                            "XPU WNA16 MoE supports symmetric INT4 group "
+                            "quantization with group_size=32 or 128 and no actorder."
+                        )
+                    moe_backend = get_moe_runner_backend()
+                    if not (moe_backend.is_auto() or moe_backend.is_triton()):
+                        raise ValueError("XPU WNA16 MoE requires auto or triton.")
+                    logger.info_once("Using CompressedTensorsWNA16TritonMoE (XPU)")
+                    return CompressedTensorsWNA16TritonMoE(
+                        self, weight_quant=weight_quant
+                    )
                 elif _is_hip:
                     logger.info_once("Using CompressedTensorsWNA16TritonMoE (ROCm)")
                     return CompressedTensorsWNA16TritonMoE(
