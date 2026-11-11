@@ -23,6 +23,8 @@ import logging
 import os
 from typing import Dict, Optional
 
+from transformers import PretrainedConfig
+
 from sglang.srt.managers.tokenizer_manager import TokenizerManager
 from sglang.srt.parser.code_completion_parser import (
     CompletionTemplate,
@@ -179,13 +181,26 @@ class TemplateManager:
         if chat_template_arg:
             self._load_explicit_chat_template(tokenizer_manager, chat_template_arg)
         else:
+            hf_template = None
+            config = tokenizer_manager.model_config.hf_config
+            if (
+                isinstance(config, PretrainedConfig)
+                and config.model_type == "paddleocr_vl"
+            ):
+                hf_template = self._resolve_hf_chat_template(tokenizer_manager)
+
             # Guess chat template from model path
-            self.guess_chat_template_from_model_path(model_path)
+            if hf_template:
+                self._chat_template_name = None
+            else:
+                self.guess_chat_template_from_model_path(model_path)
 
             # If no pre-defined template was found, fallback to HuggingFace template
             if self._chat_template_name is None:
                 # Try HuggingFace template first
-                hf_template = self._resolve_hf_chat_template(tokenizer_manager)
+                hf_template = hf_template or self._resolve_hf_chat_template(
+                    tokenizer_manager
+                )
                 if hf_template and tokenizer_manager.tokenizer:
                     # override the chat template
                     tokenizer_manager.tokenizer.chat_template = hf_template
