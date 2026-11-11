@@ -98,6 +98,8 @@ All three releases share an identical `config.json` (same `PaddleOCRVLForConditi
 - **Page resolution is the main cost knob.** The vision tower and the prefill both scale with the patch count of a page. `max_pixels` is expressed in 28x28 units (patch size 14 with a 2x2 merge), so `max_pixels / 784` is the image-token budget per page. The checkpoint's own default is 1280 tokens; the **Page Resolution** selector in the Deploy panel emits the corresponding `--mm-process-config` value. Lower it for clean born-digital PDFs, raise it for dense scans and small print.
 - **Prompt selects the task.** PaddleOCR-VL is prompt-conditioned rather than instruction-following — use the exact task strings in §3.1. A free-form question will not behave like a chat model.
 - **Leave `--trust-remote-code` off.** The checkpoints ship their own `configuration_paddleocr_vl.py` / `processing_paddleocr_vl.py`, but `transformers` 5.12 supports `paddleocr_vl` natively — and the bundled remote image processor is the slower of the two implementations (measured 87.4 ms vs 39.1 ms per 1080p page). Passing the flag pins SGLang to the remote copy. Serving without it produced byte-identical OCR output on every page we checked and about 5% more requests per second at 32-way concurrency.
+- **Preserve the checkpoint's output head.** Released flat configs explicitly set `tie_word_embeddings=false`. SGLang keeps that flag consistent with the native text sub-config; do not work around a missing `lm_head.weight` by discarding the checkpoint's untied output-head weights.
+- **Keep the release-specific chat template.** Automatic selection uses the checkpoint's Hugging Face template: the original release ends the generation prefix with `Assistant: `, while 1.5 and 1.6 use `Assistant:\n`. Leave `--chat-template` unset; explicitly selecting `paddle-ocr` forces the legacy prefix and can cause recognition errors on newer releases.
 - **Preprocessing is parallelized for you.** A full-resolution page costs tens of milliseconds of CPU to resize, normalize and patchify, which caps throughput long before the GPU saturates, so this model runs the image processor across several workers by default. `--mm-processor-worker-num` overrides the count; raising it past the default did not help in our measurements.
 - **Keep the radix cache on for repeated pages.** Unlike whole-document batch OCR over unique scans, a workload that re-asks about the same page (different task prompts on one image) reuses the image prefix. Add `--disable-radix-cache` only if every request carries a different page.
 - **The saturated-throughput flags earn their place.** A page is ~2700 tokens, so the default 8192-token prefill budget packs only three of them into a forward. Raising it to 16384 and letting decode ride along in the same batch (`--enable-mixed-chunk`, `--num-continuous-decode-steps 2`) measured +11% requests per second at 32-way concurrency and cut queued TTFT by 23%, with single-stream latency unchanged. Measured on an H200; on a smaller card lower `--chunked-prefill-size` until it fits.
@@ -167,11 +169,11 @@ PaddleOCR-VL exposes its capabilities through a small set of fixed prompts. Send
     </tr>
     <tr>
       <td style={{padding: "9px 12px"}}><code>Spotting:</code></td>
-      <td style={{padding: "9px 12px"}}>Text with locations. Benefits from the high-detail resolution setting.</td>
+      <td style={{padding: "9px 12px"}}>Text with locations (1.5 / 1.6). Benefits from the high-detail resolution setting.</td>
     </tr>
     <tr style={{backgroundColor: "rgba(255,255,255,0.02)"}}>
       <td style={{padding: "9px 12px"}}><code>Seal Recognition:</code></td>
-      <td style={{padding: "9px 12px"}}>Seals and stamps (1.6).</td>
+      <td style={{padding: "9px 12px"}}>Seals and stamps (1.5 / 1.6).</td>
     </tr>
   </tbody>
 </table>
