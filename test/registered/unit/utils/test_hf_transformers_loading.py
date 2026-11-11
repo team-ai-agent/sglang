@@ -30,6 +30,7 @@ from sglang.srt.hf_transformers import (
 from sglang.srt.hf_transformers.config import POINTER_ADAPTER_BASES
 from sglang.srt.utils.patch_tokenizer import unpatch_tokenizer
 from sglang.test.ci.ci_register import register_cpu_ci
+from sglang.test.test_utils import CustomTestCase
 
 register_cpu_ci(est_time=6, suite="base-a-test-cpu")
 
@@ -280,6 +281,58 @@ class TestHFTransformersLoading(unittest.TestCase):
             get_config(adapter(llama.name), trust_remote_code=False)
         with self.assertRaisesRegex(ValueError, "trained on a bf16 backbone"):
             get_config(adapter(self.model_path, "bf16"), trust_remote_code=False)
+
+
+class TestPaddleOCRConfigLoading(CustomTestCase):
+    def _load_config(self, raw_config, **kwargs):
+        with tempfile.TemporaryDirectory() as directory:
+            Path(directory, "config.json").write_text(json.dumps(raw_config))
+            return get_config(
+                directory,
+                trust_remote_code=False,
+                local_files_only=True,
+                **kwargs,
+            )
+
+    def test_flat_checkpoint_preserves_explicit_embedding_tying(self):
+        """Flat Paddle checkpoints must not replace an untied head with an alias."""
+        for tied in (False, True):
+            with self.subTest(tied=tied):
+                config = self._load_config(
+                    {
+                        "model_type": "paddleocr_vl",
+                        "architectures": ["PaddleOCRVLForConditionalGeneration"],
+                        "tie_word_embeddings": tied,
+                    }
+                )
+                self.assertIs(config.tie_word_embeddings, tied)
+                self.assertIs(get_hf_text_config(config).tie_word_embeddings, tied)
+
+    def test_flat_checkpoint_keeps_explicit_caller_overrides(self):
+        raw = {
+            "model_type": "paddleocr_vl",
+            "architectures": ["PaddleOCRVLForConditionalGeneration"],
+            "tie_word_embeddings": False,
+        }
+        for overrides in (
+            {"tie_word_embeddings": True},
+            {"model_override_args": {"tie_word_embeddings": True}},
+        ):
+            with self.subTest(overrides=overrides):
+                config = self._load_config(raw, **overrides)
+                self.assertTrue(config.tie_word_embeddings)
+
+    def test_nested_checkpoint_is_not_reinterpreted_as_flat(self):
+        config = self._load_config(
+            {
+                "model_type": "paddleocr_vl",
+                "architectures": ["PaddleOCRVLForConditionalGeneration"],
+                "tie_word_embeddings": True,
+                "text_config": {"tie_word_embeddings": False},
+            }
+        )
+        self.assertTrue(config.tie_word_embeddings)
+        self.assertFalse(get_hf_text_config(config).tie_word_embeddings)
 
 
 if __name__ == "__main__":
