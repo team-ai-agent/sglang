@@ -12,8 +12,8 @@ export const config = (() => {
       "--model-path " + modelOf(s),
       ...(s.hw === "arc_b"
         ? ["fast", "instant"].includes(s.checkpoint)
-          ? ["--dit-layerwise-offload", "--layerwise-offload-components transformer", "--port {{PORT}}"]
-          : ["--performance-mode auto", "--port {{PORT}}"]
+          ? ["--dit-layerwise-offload", "--port {{PORT}}"]
+          : ["--port {{PORT}}"]
         : ["--num-gpus 1", "--performance-mode auto", "--port {{PORT}}"]),
     ];
     let gpus = 1;
