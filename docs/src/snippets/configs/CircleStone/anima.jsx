@@ -1,9 +1,10 @@
 export const config = {
   modelName: "Anima Base v1.0",
-  supportedHardware: ["rtx5090", "dgx-spark", "h200"],
+  supportedHardware: ["rtx5090", "dgx-spark", "h200", "arc_b"],
   hardware: [
     { id: "rtx5090", label: "RTX 5090", vram: "32GB", vendor: "consumer" },
     { id: "dgx-spark", label: "DGX Spark", vram: "128GB unified", vendor: "blackwell" },
+    { id: "arc_b", label: "BMG", vram: "24GB", vendor: "intel" },
   ],
   groupHardware: false,
   matchDims: [],
@@ -79,6 +80,7 @@ export const config = {
         { id: "dgx-spark-1gpu-resident-sdpa", hw: "dgx-spark", nodes: 1, gpus_per_node: 1, tp_size: 1, ulysses_degree: 1, ring_degree: 1, placement: "resident", attention: "sdpa", execution: "compile", cfg: "auto", vae: "auto" },
         { id: "h200-1gpu-resident-fa", hw: "h200", nodes: 1, gpus_per_node: 1, tp_size: 1, ulysses_degree: 1, ring_degree: 1, placement: "resident", attention: "fa", execution: "compile", cfg: "auto", vae: "auto" },
         { id: "h200-2gpu-resident-cfg", hw: "h200", nodes: 1, gpus_per_node: 2, tp_size: 1, ulysses_degree: 1, ring_degree: 1, placement: "resident", attention: "fa", execution: "compile", cfg: "auto", vae: "auto" },
+        { id: "arc_b-1gpu-resident-sdpa", hw: "arc_b", nodes: 1, gpus_per_node: 1, tp_size: 1, ulysses_degree: 1, ring_degree: 1, placement: "resident", attention: "sdpa", execution: "compile", cfg: "auto", vae: "auto" },
       ],
       cfgDegree: (s) => s.cfg === "on" || (s.cfg === "auto" && s.topology_mode !== "manual" && s.hw === "h200" && Number(s.gpus_per_node) === 2) ? 2 : 1,
       vaeTiling: (s) => s.vae === "tiled" || (s.vae === "auto" && (s.hw !== "h200" || s.execution !== "compile")),

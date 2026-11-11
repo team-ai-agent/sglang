@@ -99,6 +99,25 @@ test("migrated builders reject invalid resources and undocumented topology", () 
   }
 });
 
+test("Ideogram BMG recipes omit default tuning and duplicate offload selectors", () => {
+  const ideogram = get("/Ideogram/Ideogram4.mdx");
+  for (const checkpoint of ["nf4", "fast", "instant"]) {
+    const result = resolve(ideogram, { hw: "arc_b", checkpoint });
+    assert.deepEqual(result.builder.errors, []);
+    assert.ok(result.flags.includes("--model-path " + {
+      nf4: "ideogram-ai/ideogram-4-nf4",
+      fast: "fal/ideogram-v4-fast",
+      instant: "fal/ideogram-v4-instant",
+    }[checkpoint]));
+    assert.ok(result.flags.includes("--port {{PORT}}"));
+    assert.ok(!result.flags.includes("--performance-mode auto"));
+    assert.ok(!result.flags.includes("--layerwise-offload-components transformer"));
+    assert.equal(result.flags.includes("--dit-layerwise-offload"), checkpoint !== "nf4");
+    assert.equal(result.verified, false);
+  }
+  assert.ok(resolve(ideogram, { hw: "cuda" }).flags.includes("--performance-mode auto"));
+});
+
 test("all reachable migrated options produce valid shell requests and no unresolved model", () => {
   let checked = 0;
   for (const config of migrated) {

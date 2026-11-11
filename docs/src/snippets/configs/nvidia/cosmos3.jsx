@@ -20,7 +20,7 @@ export const config = (() => {
     const errors = [];
     gpus = s.checkpoint.startsWith("super") || ["t2i", "i2v", "t2i4", "i2v4"].includes(s.checkpoint) ? 4 : 1;
     t.ulysses_degree = gpus;
-    flags.push("--num-gpus " + gpus);
+    if (s.hw !== "arc_b" || gpus > 1) flags.push("--num-gpus " + gpus);
     return { flags, gpus, topology: t, env, warnings, errors, summary: gpus + " GPUs / runtime auto parallelism" };
   };
   const defaults = {
@@ -35,8 +35,11 @@ export const config = (() => {
   };
   const config = {
     modelName: "Cosmos3",
-    supportedHardware: ["cuda"],
-    hardware: [{ id: "cuda", label: "NVIDIA CUDA", vram: "", vendor: "nvidia" }],
+    supportedHardware: ["cuda", "arc_b"],
+    hardware: [
+      { id: "cuda", label: "NVIDIA CUDA", vram: "", vendor: "nvidia" },
+      { id: "arc_b", label: "BMG", vram: "24GB", vendor: "intel" },
+    ],
     groupHardware: false,
     matchDims: [],
     overlayDims: [
@@ -46,15 +49,15 @@ export const config = (() => {
         scope: "base",
         default: "nano",
         options: [
-          { id: "nano", label: "Cosmos3-Nano" },
-          { id: "super", label: "Cosmos3-Super" },
-          { id: "t2i", label: "Cosmos3-Super-Text2Image" },
-          { id: "i2v", label: "Cosmos3-Super-Image2Video" },
-          { id: "droid", label: "Cosmos3-Nano-Policy-DROID" },
+          { id: "nano", label: "Cosmos3-Nano", showWhen: (s) => s.hw !== "arc_b" },
+          { id: "super", label: "Cosmos3-Super", showWhen: (s) => s.hw !== "arc_b" },
+          { id: "t2i", label: "Cosmos3-Super-Text2Image", showWhen: (s) => s.hw !== "arc_b" },
+          { id: "i2v", label: "Cosmos3-Super-Image2Video", showWhen: (s) => s.hw !== "arc_b" },
+          { id: "droid", label: "Cosmos3-Nano-Policy-DROID", showWhen: (s) => s.hw !== "arc_b" },
           { id: "edge", label: "Cosmos3-Edge" },
           { id: "edge_droid", label: "Cosmos3-Edge-Policy-DROID" },
-          { id: "t2i4", label: "Cosmos3-Super-Text2Image-4Step" },
-          { id: "i2v4", label: "Cosmos3-Super-Image2Video-4Step" },
+          { id: "t2i4", label: "Cosmos3-Super-Text2Image-4Step", showWhen: (s) => s.hw !== "arc_b" },
+          { id: "i2v4", label: "Cosmos3-Super-Image2Video-4Step", showWhen: (s) => s.hw !== "arc_b" },
         ],
       },
     ],
@@ -62,8 +65,8 @@ export const config = (() => {
       defaultSelection: defaults,
       resource: {
         limits: { nodes: { min: 1, max: 1 }, gpus_per_node: { min: 1, max: 4 } },
-        verifiedRecipes: ["cuda"].map((hw) => {
-          const s = { ...defaults, hw };
+        verifiedRecipes: ["cuda", "arc_b"].map((hw) => {
+          const s = { ...defaults, hw, checkpoint: hw === "arc_b" ? "edge" : defaults.checkpoint };
           const p = plan(s);
           return {
             ...s,
