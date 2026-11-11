@@ -49,7 +49,8 @@ export const Qwen3Deployment = () => {
       mi300x: { tp: 1, ep: 0, bf16: true, fp8: true },
       mi325x: { tp: 1, ep: 0, bf16: true, fp8: true },
       mi355x: { tp: 1, ep: 0, bf16: true, fp8: true },
-      xeon: { tp: 3, ep: 0, bf16: true, fp8: true }
+      xeon: { tp: 3, ep: 0, bf16: true, fp8: true },
+      arc_b: { tp: 4, ep: 0, bf16: true, fp8: false }
     },
     '8b': {
       baseName: '8B',
@@ -177,7 +178,7 @@ export const Qwen3Deployment = () => {
         ...baseOptions.quantization,
         items: baseOptions.quantization.items.map(item => ({
           ...item,
-          disabled: item.id !== 'bf16'
+          disabled: item.id !== 'bf16' && !(values.modelsize === '32b' && item.id === 'fp8')
         }))
       };
 
@@ -185,7 +186,7 @@ export const Qwen3Deployment = () => {
         ...baseOptions.modelsize,
         items: baseOptions.modelsize.items.map(item => ({
           ...item,
-          disabled: item.id !== '30b' && item.id !== '32b'
+          disabled: item.id !== '30b' && item.id !== '32b' && item.id !== '14b'
         }))
       };
     }
@@ -204,6 +205,17 @@ export const Qwen3Deployment = () => {
     // Only show reasoningParser when category is not 'instruct'
     if (values.category === 'instruct') {
       delete options.reasoningParser;
+    }
+
+    if (values.hardware === 'arc_b' && (values.quantization === 'fp8' || values.modelsize === '14b')) {
+      for (const name of ['reasoningParser', 'toolcall']) {
+        if (options[name]) {
+          options[name] = {
+            ...options[name],
+            items: options[name].items.map(item => ({ ...item, disabled: item.id !== 'disabled' }))
+          };
+        }
+      }
     }
 
     return options;
@@ -239,11 +251,25 @@ export const Qwen3Deployment = () => {
 
   const handleRadioChange = (optionName, value) => {
     setValues(prev => {
+      if (prev.hardware === 'arc_b') {
+        if (optionName === 'quantization' && value === 'fp8' && prev.modelsize !== '32b') return prev;
+        if ((prev.quantization === 'fp8' || prev.modelsize === '14b') &&
+            ((['reasoningParser', 'toolcall'].includes(optionName) && value !== 'disabled') ||
+             (optionName === 'category' && value !== 'base'))) return prev;
+      }
       const newValues = { ...prev, [optionName]: value };
 
+      if (prev.hardware === 'arc_b' && optionName === 'quantization' && value === 'fp8') {
+        newValues.category = 'base';
+        newValues.reasoningParser = 'disabled';
+        newValues.toolcall = 'disabled';
+      }
+      if (prev.hardware === 'arc_b' && optionName === 'modelsize' && value !== '32b' && prev.quantization === 'fp8') {
+        newValues.quantization = 'bf16';
+      }
       if (optionName === 'hardware' && value === 'arc_b') {
         newValues.quantization = 'bf16';
-        if (newValues.modelsize !== '30b' && newValues.modelsize !== '32b') {
+        if (newValues.modelsize !== '30b' && newValues.modelsize !== '32b' && newValues.modelsize !== '14b') {
           newValues.modelsize = '32b';
         }
         newValues.category = 'base';
@@ -264,6 +290,11 @@ export const Qwen3Deployment = () => {
         newValues.reasoningParser = 'disabled';
       }
 
+      if (newValues.hardware === 'arc_b' && newValues.modelsize === '14b') {
+        newValues.reasoningParser = 'disabled';
+        newValues.toolcall = 'disabled';
+      }
+
       return newValues;
     });
   };
@@ -271,6 +302,18 @@ export const Qwen3Deployment = () => {
   // Generate command
   const generateCommand = () => {
     const { hardware, modelsize, quantization, category, reasoningParser, toolcall } = values;
+    if (hardware === 'arc_b' && modelsize === '14b') {
+      if (quantization !== 'bf16' || category !== 'base' || reasoningParser !== 'disabled' || toolcall !== 'disabled') {
+        return '# Select the validated BMG 14B BF16 configuration';
+      }
+      return 'UR_L0_USE_COPY_ENGINE=0 UR_L0_USE_IMMEDIATE_COMMANDLISTS=0 UR_L0_USE_DRIVER_COUNTER_BASED_EVENTS=0 UR_L0_DISABLE_EVENTS_CACHING=1 sglang serve --model Qwen/Qwen3-14B \\\n  --device xpu --attention-backend intel_xpu --tp 4 --page-size 64 \\\n  --context-length 16384 --mem-fraction-static 0.8 --max-running-requests 4';
+    }
+    if (hardware === 'arc_b' && quantization === 'fp8') {
+      if (modelsize !== '32b' || category !== 'base' || reasoningParser !== 'disabled' || toolcall !== 'disabled') {
+        return '# Select the validated BMG 32B FP8 configuration';
+      }
+      return 'UR_L0_USE_COPY_ENGINE=0 sglang serve --model Qwen/Qwen3-32B-FP8 \\\n  --device xpu --attention-backend intel_xpu --tp 4 --page-size 64 \\\n  --context-length 16384 --mem-fraction-static 0.8 --max-running-requests 4';
+    }
     const effectiveQuantization = hardware === 'arc_b' ? 'bf16' : quantization;
 
     // Special error handling

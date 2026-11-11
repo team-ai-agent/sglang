@@ -1,0 +1,30 @@
+{
+  "h100": {
+    "count": 48,
+    "sha256": "e8a7375ebe491dedbee52a07d3a17f8ea70e86addbb7ffa3333ae93694643926"
+  },
+  "h200": {
+    "count": 48,
+    "sha256": "243b84d52d5212d0d214029e25ed70c4df3376347bb6ec2deb9ae984a396d41d"
+  },
+  "b200": {
+    "count": 72,
+    "sha256": "c28103a92d69a79c47778624ed1a5d80aa80f58168e50199d86d84a82723cda9"
+  },
+  "b300": {
+    "count": 72,
+    "sha256": "7344e5d3651d53a567e4762364c7dd7ab3ba905c60b5e4e563a18abf51b4d9f0"
+  },
+  "xeon": {
+    "count": 16,
+    "sha256": "5236501db7670b2f27f2d5341748bc0ba13877de966cdeaab57ce8d1470635c4"
+  },
+  "rtx-spark": {
+    "count": 4,
+    "sha256": "7fd20a146348e6a130741a85e8a2bdc8660161c2b9663671e3283dbecbda6a5f"
+  },
+  "a3": {
+    "count": 32,
+    "sha256": "651aa2a5b30c2a960ec923c99a3c31009d0bf919456e5bdaaba085b9cfdd29b8"
+  }
+}

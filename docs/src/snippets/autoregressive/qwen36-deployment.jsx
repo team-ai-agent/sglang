@@ -10,6 +10,7 @@ export const Qwen36Deployment = () => {
         { id: 'b200', label: 'B200', default: false },
         { id: 'b300', label: 'B300', default: false },
         { id: 'xeon', label: 'XEON', default: false },
+        { id: 'arc_b', label: 'BMG', default: false },
         { id: 'rtx-spark', label: 'RTX Spark', default: false },
         { id: 'a3', label: 'A3 (NPU)', default: false },
       ],
@@ -41,6 +42,12 @@ export const Qwen36Deployment = () => {
       // Ascend NPU deployment offers BF16 for both model sizes.
       // RTX Spark only has a validated NVFP4 recipe (35B-A3B).
       getDynamicItems: (values) => {
+        if (values.hardware === 'arc_b') {
+          if (values.modelSize === '27b') {
+            return [{ id: 'bf16', label: 'BF16', default: true }];
+          }
+          return [{ id: 'bf16', label: 'BF16', default: true }, { id: 'fp8', label: 'FP8', default: false }];
+        }
         if (values.hardware === 'a3') {
           return [{ id: 'bf16', label: 'BF16', default: true }];
         }
@@ -61,6 +68,7 @@ export const Qwen36Deployment = () => {
     reasoning: {
       name: 'reasoning',
       title: 'Reasoning Parser',
+      condition: (values) => values.hardware !== 'arc_b',
       items: [
         { id: 'disabled', label: 'Disabled', default: false },
         { id: 'enabled', label: 'Enabled', default: true },
@@ -70,6 +78,7 @@ export const Qwen36Deployment = () => {
     toolcall: {
       name: 'toolcall',
       title: 'Tool Call Parser',
+      condition: (values) => values.hardware !== 'arc_b',
       items: [
         { id: 'disabled', label: 'Disabled', default: false },
         { id: 'enabled', label: 'Enabled', default: true },
@@ -82,11 +91,12 @@ export const Qwen36Deployment = () => {
       getDynamicItems: (values) => {
         const isXeon = values.hardware === 'xeon';
         const isSpark = values.hardware === 'rtx-spark';
-        const noSpec = isXeon || isSpark;
+        const isBmg = values.hardware === 'arc_b';
+        const noSpec = isXeon || isSpark || isBmg;
         return [
           { id: 'disabled', label: 'Disabled', default: noSpec },
           { id: 'enabled', label: 'Enabled', default: !noSpec, disabled: noSpec,
-            disabledReason: isXeon ? 'Speculative decoding is not supported on Xeon' : isSpark ? 'Speculative decoding is not validated on RTX Spark' : '' },
+            disabledReason: isXeon ? 'Speculative decoding is not supported on Xeon' : isSpark ? 'Speculative decoding is not validated on RTX Spark' : isBmg ? 'Speculative decoding is not validated on BMG' : '' },
         ];
       },
       commandRule: (value, values) => {
@@ -99,7 +109,7 @@ export const Qwen36Deployment = () => {
     mambaCache: {
       name: 'mambaCache',
       title: 'Mamba Radix Cache',
-      condition: (values) => values.hardware !== 'xeon' && values.hardware !== 'a3',
+      condition: (values) => values.hardware !== 'xeon' && values.hardware !== 'a3' && values.hardware !== 'arc_b',
       getDynamicItems: (values) => {
         const mtpEnabled = values.speculative === 'enabled';
         if (values.hardware === 'rtx-spark') {
@@ -157,6 +167,25 @@ export const Qwen36Deployment = () => {
     return initialState;
   };
 
+  const getUpdatedValues = (prev, optionName, value) => {
+    if (optionName === 'hardware' && value === 'arc_b') {
+      return {
+        ...prev, hardware: value, modelSize: '35b-a3b', quantization: 'bf16',
+        reasoning: 'disabled', toolcall: 'disabled', speculative: 'disabled', mambaCache: 'v1',
+      };
+    }
+    if (prev.hardware === 'arc_b' && optionName !== 'hardware') {
+      const option = options[optionName];
+      if (!option || (option.condition && !option.condition(prev))) return prev;
+      const item = resolveItems(option, prev).find((candidate) => candidate.id === value);
+      if (!item || item.disabled) return prev;
+      if (optionName === 'modelSize' && value === '27b') {
+        return { ...prev, modelSize: value, quantization: 'bf16' };
+      }
+    }
+    return { ...prev, [optionName]: value };
+  };
+
   const [values, setValues] = useState(getInitialState);
   const [isDark, setIsDark] = useState(false);
 
@@ -195,12 +224,25 @@ export const Qwen36Deployment = () => {
   }, [values.speculative, values.hardware, values.modelSize]);
 
   const handleRadioChange = (optionName, value) => {
-    setValues((prev) => ({ ...prev, [optionName]: value }));
+    setValues((prev) => getUpdatedValues(prev, optionName, value));
   };
 
   const generateCommand = () => {
     const { hardware, modelSize, quantization, speculative } = values;
     const sizeConfig = modelConfigs[modelSize];
+
+    if (hardware === 'arc_b') {
+      if (modelSize === '27b' && quantization === 'bf16' && speculative === 'disabled') {
+        return 'UR_L0_USE_COPY_ENGINE=0 UR_L0_USE_IMMEDIATE_COMMANDLISTS=0 UR_L0_USE_DRIVER_COUNTER_BASED_EVENTS=0 UR_L0_DISABLE_EVENTS_CACHING=1 sglang serve --model-path Qwen/Qwen3.6-27B \\\n  --device xpu --attention-backend intel_xpu \\\n  --tp 4 --linear-attn-backend intel_xpu --page-size 1 --reasoning-parser qwen3 \\\n  --context-length 16384 --mem-fraction-static 0.8 --max-running-requests 4';
+      }
+      if (modelSize !== '35b-a3b' || !['bf16', 'fp8'].includes(quantization) || speculative !== 'disabled') {
+        return '# Select BMG 35B-A3B BF16/FP8 or 27B BF16 without speculative decoding';
+      }
+      if (quantization === 'fp8') {
+        return 'UR_L0_USE_COPY_ENGINE=0 sglang serve --model-path Qwen/Qwen3.6-35B-A3B-FP8 \\\n  --device xpu --attention-backend intel_xpu \\\n  --tp 4 --linear-attn-backend intel_xpu --page-size 1 \\\n  --context-length 16384 --mem-fraction-static 0.8 --max-running-requests 4';
+      }
+      return 'sglang serve --model-path Qwen/Qwen3.6-35B-A3B \\\n  --device xpu --attention-backend intel_xpu \\\n  --tp 4 --linear-attn-backend intel_xpu --page-size 1 \\\n  --context-length 16384 --mem-fraction-static 0.8 --max-running-requests 4';
+    }
 
     // Atlas 800I A3 (Ascend NPU): PD-mixed single-node serving. Follows the
     // baseline settings in the Ascend NPU tutorials — ascend attention

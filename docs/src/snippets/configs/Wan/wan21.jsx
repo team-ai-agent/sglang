@@ -1,6 +1,6 @@
 export const config = (() => {
   const modelOf = (s) =>
-    ({
+    s.hw === "arc_b" ? "Wan-AI/Wan2.1-T2V-1.3B-Diffusers" : ({
       "t2v-14b": "Wan-AI/Wan2.1-T2V-14B-Diffusers",
       "t2v-1_3b": "Wan-AI/Wan2.1-T2V-1.3B-Diffusers",
       "i2v-14b": "Wan-AI/Wan2.1-I2V-14B-720P-Diffusers",
@@ -9,12 +9,17 @@ export const config = (() => {
     const small = !s.variant.endsWith("14b");
     const ascend = ["a2", "a3"].includes(s.hw);
     const xeon = s.hw === "xeon";
+    const bmg = s.hw === "arc_b";
     const fast = ascend ? Number(s.gpus_per_node) === 8 : Number(s.gpus_per_node) > 1;
     let gpus = 1,
       tp = 1,
       sp = 1;
     const flags = ["--model-path " + modelOf(s)];
-    if (ascend) {
+    if (bmg) {
+      gpus = 4;
+      tp = 4;
+      flags.push("--num-gpus 4", "--tp-size 4", "--attention-backend fa");
+    } else if (ascend) {
       if (small && s.hw === "a2" && !fast) flags.push("--num-gpus 1");
       else {
         tp = small ? (fast ? 4 : 1) : 2;
@@ -38,12 +43,20 @@ export const config = (() => {
       "t2v-14b": "NIVEDAN/wan2.1-lora",
       "i2v-14b": "valiantcat/Wan2.1-Fight-LoRA",
     }[s.variant];
-    if (!xeon && s.lora === s.variant && lora) flags.push("--lora-path " + lora);
+    if (!xeon && !bmg && s.lora === s.variant && lora) flags.push("--lora-path " + lora);
     return {
       flags,
       gpus,
       topology: { tp_size: tp, ulysses_degree: sp, ring_degree: 1 },
-      env: xeon ? ["SGLANG_DIFFUSION_PLATFORM_OVERRIDE=cpu"] : [],
+      env: bmg ? [
+        "UR_L0_USE_COPY_ENGINE=0",
+        "UR_L0_USE_IMMEDIATE_COMMANDLISTS=0",
+        "UR_L0_USE_DRIVER_COUNTER_BASED_EVENTS=0",
+        "UR_L0_DISABLE_EVENTS_CACHING=1",
+        "SGLANG_DIFFUSION_PLATFORM_OVERRIDE=xpu",
+      ] : xeon ? ["SGLANG_DIFFUSION_PLATFORM_OVERRIDE=cpu"] : [],
+      errors: bmg && (s.variant !== "t2v-1_3b" || s.lora !== "none")
+        ? ["BMG covers only T2V 1.3B without LoRA."] : [],
       warnings: ascend ? ["Ascend recipes count NPU chips; one A3 card has two chips."] : [],
     };
   };
@@ -60,11 +73,12 @@ export const config = (() => {
   };
   const config = {
     modelName: "Wan2.1",
-    supportedHardware: ["b200", "b300", "h200", "h100", "mi300x", "mi325x", "mi355x", "a2", "a3", "xeon"],
+    supportedHardware: ["b200", "b300", "h200", "h100", "mi300x", "mi325x", "mi355x", "a2", "a3", "xeon", "arc_b"],
     hardware: [
       { id: "a2", label: "Ascend A2", vram: "", vendor: "npu" },
       { id: "a3", label: "Ascend A3", vram: "2 NPUs / card", vendor: "npu" },
       { id: "xeon", label: "XEON", vram: "CPU", vendor: "cpu" },
+      { id: "arc_b", label: "BMG", vram: "4 x 24 GB", vendor: "intel" },
     ],
     groupHardware: false,
     matchDims: [],
@@ -75,9 +89,9 @@ export const config = (() => {
         scope: "base",
         default: "t2v-14b",
         options: [
-          { id: "t2v-14b", label: "T2V 14B" },
+          { id: "t2v-14b", label: "T2V 14B", disabled: (s) => s.hw === "arc_b", disableReason: "Only T2V 1.3B was validated on BMG." },
           { id: "t2v-1_3b", label: "T2V 1.3B" },
-          { id: "i2v-14b", label: "I2V 14B" },
+          { id: "i2v-14b", label: "I2V 14B", disabled: (s) => s.hw === "arc_b", disableReason: "Only T2V 1.3B was validated on BMG." },
         ],
       },
       {
@@ -91,7 +105,7 @@ export const config = (() => {
             id: "t2v-14b",
             label: "NIVEDAN/wan2.1-lora",
             showWhen: function anonymous(s) {
-              return s.variant === "t2v-14b";
+              return s.variant === "t2v-14b" && s.hw !== "arc_b";
             },
             disabled: (s) => s.hw === "xeon",
             disableReason: "LoRA is not supported on Intel Xeon CPUs.",
@@ -100,7 +114,7 @@ export const config = (() => {
             id: "i2v-14b",
             label: "valiantcat/Wan2.1-Fight-LoRA",
             showWhen: function anonymous(s) {
-              return s.variant === "i2v-14b";
+              return s.variant === "i2v-14b" && s.hw !== "arc_b";
             },
             disabled: (s) => s.hw === "xeon",
             disableReason: "LoRA is not supported on Intel Xeon CPUs.",
@@ -113,10 +127,10 @@ export const config = (() => {
       resource: {
         limits: {
           nodes: { min: 1, max: 1 },
-          gpus_per_node: { min: 1, max: 8, disabledWhen: (s) => s.hw === "xeon", disabledValue: 1 },
+          gpus_per_node: { min: 1, max: 8, disabledWhen: (s) => s.hw === "xeon", disabledValue: 1, allowedValues: (s) => s.hw === "arc_b" ? [4] : [] },
         },
-        verifiedRecipes: ["b200", "b300", "h200", "h100", "mi300x", "mi325x", "mi355x", "a2", "a3", "xeon"].map((hw) => {
-          const s = { ...defaults, hw };
+        verifiedRecipes: ["b200", "b300", "h200", "h100", "mi300x", "mi325x", "mi355x", "a2", "a3", "xeon", "arc_b"].map((hw) => {
+          const s = { ...defaults, hw, ...(hw === "arc_b" ? { variant: "t2v-1_3b", lora: "none" } : {}) };
           const p = plan(s);
           return {
             ...s,
