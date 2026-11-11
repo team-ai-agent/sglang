@@ -49,6 +49,8 @@ For general environment setup, see the [SGLang Diffusion installation guide](/do
 
 ## 3. Model Deployment
 
+This section provides deployment configurations for NVIDIA GPUs and Intel Arc Pro B-Series GPUs(Battlemage, BMG).
+
 Serve the base Pi0.5 policy:
 
 ```bash Command
@@ -63,6 +65,24 @@ Serve the LIBERO checkpoint:
 ```bash Command
 sglang serve lerobot/pi05_libero_base \
   --model-type diffusion \
+  --host 127.0.0.1 \
+  --port 30000
+```
+
+Serve `lerobot/pi05_base` or `lerobot/pi05_libero_base` on Intel Arc Pro B-Series GPUs (BMG):
+
+```bash Command
+sglang serve lerobot/pi05_base \
+  --model-type diffusion \
+  --warmup-mode off \
+  --host 127.0.0.1 \
+  --port 30000
+```
+
+```bash Command
+sglang serve lerobot/pi05_libero_base \
+  --model-type diffusion \
+  --warmup-mode off \
   --host 127.0.0.1 \
   --port 30000
 ```
