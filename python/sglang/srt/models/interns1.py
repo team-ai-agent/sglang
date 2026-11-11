@@ -148,6 +148,7 @@ class InternS1ForConditionalGeneration(nn.Module):
             language_model=self.language_model,
             data_embedding_funcs={
                 Modality.IMAGE: self.get_image_feature,
+                Modality.VIDEO: self.get_image_feature,
             },
             positions=positions,
         )
