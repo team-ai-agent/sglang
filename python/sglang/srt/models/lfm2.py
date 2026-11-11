@@ -8,7 +8,8 @@ This is a hybrid architecture with both attention and short conv layers.
 The model uses a gated 1D causal convolution (kernel=3) instead of attention
 in some layers, providing linear memory complexity for those layers.
 
-Uses optimized causal_conv1d kernels from the mamba package for fast inference.
+Uses optimized causal_conv1d kernels on accelerators and native grouped
+convolution on CPUs. CPU speculative verification is not supported.
 """
 
 import logging
@@ -339,7 +340,9 @@ class Lfm2ShortConv(nn.Module):
         B_gate, C_gate, x = proj.chunk(3, dim=-1)
         Bx = B_gate * x
 
-        if forward_batch.forward_mode.is_decode():
+        if Bx.device.type == "cpu":
+            conv_out = self._forward_cpu(Bx, conv_state, meta, forward_batch)
+        elif forward_batch.forward_mode.is_decode():
             # Decode: single token per request, use optimized update kernel
             conv_out = causal_conv1d_update(
                 Bx,
@@ -368,6 +371,46 @@ class Lfm2ShortConv(nn.Module):
             ).transpose(0, 1)
 
         output, _ = self.out_proj(C_gate * conv_out)
+        return output
+
+    def _forward_cpu(
+        self,
+        x: torch.Tensor,
+        conv_state: torch.Tensor,
+        meta: "ShortConvMetadata",
+        forward_batch: ForwardBatch,
+    ) -> torch.Tensor:
+        if forward_batch.forward_mode.is_target_verify():
+            raise NotImplementedError(
+                "LFM2 speculative short-convolution verification is not supported on CPU."
+            )
+        decode = forward_batch.forward_mode.is_decode()
+        seq_lens = [1] * x.shape[0] if decode else forward_batch.extend_seq_lens_cpu
+        has_initial_state = (
+            [True] * x.shape[0] if decode else meta.has_initial_state.tolist()
+        )
+        output = torch.zeros_like(x)
+        start = 0
+        for seq_len, slot, has_prefix in zip(
+            seq_lens, meta.cache_indices.tolist(), has_initial_state
+        ):
+            end = start + seq_len
+            if slot != -1 and seq_len:
+                state = conv_state[slot]
+                prefix = state if has_prefix else torch.zeros_like(state)
+                inputs = torch.cat((prefix, x[start:end].T), dim=-1)
+                output[start:end] = (
+                    F.conv1d(
+                        inputs.unsqueeze(0),
+                        self.conv_weight.unsqueeze(1),
+                        self.conv_bias,
+                        groups=self.hidden_size_per_partition,
+                    )
+                    .squeeze(0)
+                    .T
+                )
+                state.copy_(inputs[:, -state.shape[-1] :])
+            start = end
         return output
 
 
