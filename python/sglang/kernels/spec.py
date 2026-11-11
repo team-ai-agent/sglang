@@ -47,7 +47,6 @@ class KernelBackend(str, Enum):
     HELION = "helion"
     KDA = "KDA"  # Kernel Design Agents generated implementation
     CAKE = "cake"  # Cake-generated implementation, distributed by FlashInfer
-    PLUGIN = "plugin"  # out-of-tree kernel library (plugin_kernels)
     FLASHINFER = "flashinfer"
     DEEPGEMM = "deepgemm"
     AITER = "aiter"  # AMD aiter library (device=HIP)
@@ -60,11 +59,10 @@ class DeviceType(str, Enum):
 
     CUDA = "cuda"
     HIP = "hip"
-    MUSA = "musa"
     NPU = "npu"  # Ascend NPU (torch_npu / sgl_kernel_npu)
     CPU = "cpu"
-    MLU = "mlu"
-    # TODO(RFC #29630): XPU / ... as backends land.
+    XPU = "xpu"
+    # TODO(RFC #29630): MUSA / ... as backends land.
 
 
 class PlatformInfo(msgspec.Struct, frozen=True):
@@ -89,28 +87,13 @@ class PlatformInfo(msgspec.Struct, frozen=True):
     def is_cuda(self) -> bool:
         return self.device_type == "cuda"
 
-    @property
-    def is_hip(self) -> bool:
-        return self.device_type == "hip"
-
-    @property
-    def is_musa(self) -> bool:
-        return self.device_type == "musa"
-
     @classmethod
-    def detect(cls, *, use_cache: bool = True) -> PlatformInfo:
-        """The platform of the current process, probed once and then cached.
+    def detect(cls) -> PlatformInfo:
+        """Build a :class:`PlatformInfo` from the current process.
 
         Never raises: if no accelerator is visible the default CPU platform is
-        returned. Do not call at import time: probing initializes CUDA.
+        returned.
         """
-        global _DETECTED_PLATFORM
-        if _DETECTED_PLATFORM is None or not use_cache:
-            _DETECTED_PLATFORM = cls._probe()
-        return _DETECTED_PLATFORM
-
-    @classmethod
-    def _probe(cls) -> PlatformInfo:
         import torch
 
         try:
@@ -119,17 +102,6 @@ class PlatformInfo(msgspec.Struct, frozen=True):
             npu = getattr(torch, "npu", None)
             if npu is not None and npu.is_available():
                 return cls(device_type="npu")
-            mlu = getattr(torch, "mlu", None)
-            if mlu is not None and mlu.is_available():
-                return cls(device_type="mlu")
-            musa = getattr(torch, "musa", None)
-            if musa is not None and musa.is_available():
-                return cls(device_type="musa")
-            if (
-                getattr(torch.version, "musa", None) is not None
-                and torch.cuda.is_available()
-            ):
-                return cls(device_type="musa")
             if torch.cuda.is_available():
                 major, minor = torch.cuda.get_device_capability()
                 return cls(
@@ -137,12 +109,11 @@ class PlatformInfo(msgspec.Struct, frozen=True):
                     cuda_arch_major=major,
                     cuda_arch_minor=minor,
                 )
+            if torch.xpu.is_available():
+                return cls(device_type="xpu")
         except Exception:
             pass
         return cls()
-
-
-_DETECTED_PLATFORM: Optional[PlatformInfo] = None
 
 
 class CapabilityRequirement(msgspec.Struct, frozen=True):
@@ -158,8 +129,7 @@ class CapabilityRequirement(msgspec.Struct, frozen=True):
     (``min_cuda_arch`` / ``max_cuda_arch`` apply only when ``device == CUDA``).
 
     The device-only cases are so common that they are exposed as class constants
-    (``CapabilityRequirement.CUDA`` / ``.HIP`` / ``.MUSA`` / ``.NPU``);
-    use :meth:`cuda` for an
+    (``CapabilityRequirement.CUDA`` / ``.HIP`` / ``.NPU``); use :meth:`cuda` for an
     arch-bounded CUDA requirement (e.g. ``CapabilityRequirement.cuda(
     min_sm=(10, 0))`` for SM100+).
     """
@@ -172,9 +142,7 @@ class CapabilityRequirement(msgspec.Struct, frozen=True):
     # instances of the class itself). ClassVar keeps them out of msgspec fields.
     CUDA: ClassVar[CapabilityRequirement]
     HIP: ClassVar[CapabilityRequirement]
-    MUSA: ClassVar[CapabilityRequirement]
     NPU: ClassVar[CapabilityRequirement]
-    MLU: ClassVar[CapabilityRequirement]
 
     @classmethod
     def cuda(
@@ -199,20 +167,26 @@ class CapabilityRequirement(msgspec.Struct, frozen=True):
 
 CapabilityRequirement.CUDA = CapabilityRequirement(device=DeviceType.CUDA)
 CapabilityRequirement.HIP = CapabilityRequirement(device=DeviceType.HIP)
-CapabilityRequirement.MUSA = CapabilityRequirement(device=DeviceType.MUSA)
 CapabilityRequirement.NPU = CapabilityRequirement(device=DeviceType.NPU)
-CapabilityRequirement.MLU = CapabilityRequirement(device=DeviceType.MLU)
 
 CUDA_ONLY: FrozenSet[CapabilityRequirement] = frozenset({CapabilityRequirement.CUDA})
 
 
 def capabilities_satisfied(
     capabilities: Union[
-        FrozenSet[CapabilityRequirement], Tuple[CapabilityRequirement, ...]
+        FrozenSet[CapabilityRequirement],
+        Tuple[CapabilityRequirement, ...],
+        CapabilityRequirement,
     ],
     platform: PlatformInfo,
 ) -> bool:
-    """OR over ``capabilities`` (empty = unrestricted)."""
+    """OR over ``capabilities`` (empty = unrestricted).
+
+    Accepts a set/tuple of requirements, or tolerates a single
+    :class:`CapabilityRequirement` (the pre-decouple API used one) by wrapping it.
+    """
+    if isinstance(capabilities, CapabilityRequirement):
+        capabilities = (capabilities,)
     return (not capabilities) or any(c.is_satisfied_by(platform) for c in capabilities)
 
 

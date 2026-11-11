@@ -139,6 +139,89 @@ _mock_device = patch(
 _mock_device.start()
 
 
+class TestNemotronMoeBackendDefaults(unittest.TestCase):
+    def test_w4a16_marlin_default_is_cuda_only(self):
+        from sglang.srt.arg_groups.model_overrides import nemotron_h
+
+        cfg = SimpleNamespace(
+            quantization="modelopt_mixed",
+            enable_eplb=False,
+            ep_num_redundant_experts=0,
+            init_expert_location="trivial",
+            moe_runner_backend="auto",
+            moe_a2a_backend="none",
+            attention_backend="triton",
+        )
+        hf_config = SimpleNamespace(
+            architectures=["NemotronHForCausalLM"],
+            mlp_hidden_act="relu2",
+            quantization_config={
+                "quantized_layers": {
+                    "backbone.layers.1.mixer.experts.0.up_proj": {
+                        "quant_algo": "W4A16_NVFP4"
+                    }
+                }
+            },
+        )
+        for is_cuda, backend in ((False, "auto"), (False, "triton"), (True, "auto")):
+            with self.subTest(is_cuda=is_cuda, backend=backend):
+                cfg.moe_runner_backend = backend
+                platform = SimpleNamespace(is_cuda=is_cuda, is_blackwell=False)
+                with (
+                    patch.object(nemotron_h, "resolving_view", return_value=cfg),
+                    patch.object(
+                        nemotron_h,
+                        "model_config_of",
+                        return_value=SimpleNamespace(quantization="modelopt_mixed"),
+                    ),
+                    patch.object(nemotron_h, "get_platform", return_value=platform),
+                ):
+                    overrides = nemotron_h._nemotron_h_overrides(None, hf_config)
+                self.assertEqual(
+                    overrides.get("moe_runner_backend"), "marlin" if is_cuda else None
+                )
+
+    def test_auto_does_not_force_cuda_runner_on_xpu(self):
+        from sglang.srt.arg_groups.model_overrides import nemotron_h
+
+        cfg = SimpleNamespace(
+            quantization="modelopt_fp4",
+            enable_eplb=False,
+            ep_num_redundant_experts=0,
+            init_expert_location="trivial",
+            moe_runner_backend="auto",
+            moe_a2a_backend="none",
+            attention_backend="triton",
+        )
+        hf_config = SimpleNamespace(
+            architectures=["NemotronHForCausalLM"], mlp_hidden_act="relu2"
+        )
+        for is_cuda, capability, expected in (
+            (False, None, None),
+            (True, (8, 0), "marlin"),
+            (True, (10, 0), "flashinfer_trtllm"),
+            (True, (12, 0), "flashinfer_cutlass"),
+        ):
+            with self.subTest(is_cuda=is_cuda, capability=capability):
+                platform = SimpleNamespace(
+                    is_cuda=is_cuda,
+                    device_capability=capability,
+                    is_sm100=capability == (10, 0),
+                    is_blackwell=capability in ((10, 0), (12, 0)),
+                )
+                with (
+                    patch.object(nemotron_h, "resolving_view", return_value=cfg),
+                    patch.object(
+                        nemotron_h,
+                        "model_config_of",
+                        return_value=SimpleNamespace(quantization="modelopt_fp4"),
+                    ),
+                    patch.object(nemotron_h, "get_platform", return_value=platform),
+                ):
+                    overrides = nemotron_h._nemotron_h_overrides(None, hf_config)
+                self.assertEqual(overrides.get("moe_runner_backend"), expected)
+
+
 class TestServerArgsPositionalOrder(CustomTestCase):
     def test_new_parallel_flag_preserves_existing_positional_slots(self):
         """New options must not reinterpret existing positional constructor calls."""

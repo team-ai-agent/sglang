@@ -3,7 +3,6 @@
 # Adapted from https://github.com/vllm-project/vllm/blob/main/vllm/model_executor/layers/quantization/modelopt.py
 from __future__ import annotations
 
-import copy
 import logging
 from functools import lru_cache
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
@@ -67,11 +66,15 @@ from sglang.srt.layers.quantization.utils import (
 )
 from sglang.srt.layers.radix_attention import RadixAttention
 from sglang.srt.layers.utils import alias_or_bind_derived_param, copy_or_rebind_param
-from sglang.srt.layers.utils.common import set_weight_attrs
 from sglang.srt.runtime_context import get_platform
-from sglang.srt.utils.common import round_up
+from sglang.srt.utils.common import (
+    get_device_capability,
+    is_cuda,
+    is_xpu,
+    round_up,
+    set_weight_attrs,
+)
 from sglang.srt.utils.custom_op import register_custom_op
-from sglang.srt.utils.device import get_device_capability, is_cuda
 from sglang.srt.utils.patch_torch import register_fake_if_exists
 
 if TYPE_CHECKING:
@@ -675,7 +678,6 @@ class ModelOptFp8LinearMethod(LinearMethodBase):
                 weight_scale=layer.weight_scale,
                 input_scale=layer.input_scale,
                 bias=bias,
-                pre_quant_output_dtype=layer.orig_dtype,
             )
         return apply_fp8_linear(
             input=x,
@@ -684,7 +686,6 @@ class ModelOptFp8LinearMethod(LinearMethodBase):
             input_scale=layer.input_scale,
             bias=bias,
             cutlass_fp8_supported=self.cutlass_fp8_supported,
-            pre_quant_output_dtype=layer.orig_dtype,
         )
 
 
@@ -817,13 +818,11 @@ class ModelOptMixedPrecisionConfig(ModelOptQuantConfig):
         nvfp4a16_config: ModelOptFp4Config,
         mxfp8_config: Fp8Config,
         fp8_block_config: Fp8Config,
-        mxfp8_linear_config: Optional[Fp8Config] = None,
     ) -> None:
         super().__init__(kv_cache_quant_algo, exclude_modules, packed_modules_mapping)
         self.quantized_layers = quantized_layers
         self.fp8_config = fp8_config
         self.mxfp8_config = mxfp8_config
-        self.mxfp8_linear_config = mxfp8_linear_config or mxfp8_config
         self.fp8_block_config = fp8_block_config
         self.nvfp4_config = nvfp4_config
         self.nvfp4a16_config = nvfp4a16_config
@@ -933,13 +932,6 @@ class ModelOptMixedPrecisionConfig(ModelOptQuantConfig):
             packed_modules_mapping=packed_modules_mapping,
             use_mxfp8=True,
         )
-        # On CUDA GPUs other than Blackwell no dense GEMM takes 1x32 MXFP8 scales
-        # (DeepGEMM asserts on them on Hopper), so dense MXFP8 layers are
-        # converted to block-FP8 [128,128] at load. MoE keeps the MXFP8 config.
-        mxfp8_linear_config = mxfp8_config
-        if is_cuda() and not get_platform().is_blackwell:
-            mxfp8_linear_config = copy.copy(mxfp8_config)
-            mxfp8_linear_config.convert_mxfp8_to_block_fp8 = True
         # Block-FP8 (FP8_PB_WO / FP8_BLOCK_SCALES): fp8 weight with a per-block
         # weight_scale_inv; the block size comes from the checkpoint's
         # group_size (128 by default). One config serves Linear and FusedMoE.
@@ -973,7 +965,6 @@ class ModelOptMixedPrecisionConfig(ModelOptQuantConfig):
             fp8_config=fp8_config,
             mxfp8_config=mxfp8_config,
             fp8_block_config=fp8_block_config,
-            mxfp8_linear_config=mxfp8_linear_config,
             nvfp4_config=nvfp4_config,
             nvfp4a16_config=nvfp4a16_config,
         )
@@ -1065,10 +1056,23 @@ class ModelOptMixedPrecisionConfig(ModelOptQuantConfig):
             if quant_algo in _BLOCK_FP8_ALGOS:
                 return Fp8LinearMethod(self.fp8_block_config)
             if quant_algo == "MXFP8":
-                return Fp8LinearMethod(self.mxfp8_linear_config)
+                return Fp8LinearMethod(self.mxfp8_config)
             if quant_algo == "NVFP4":
+                if is_xpu():
+                    # Match the CUDA pre-Blackwell Marlin weight-only contract.
+                    from sglang.srt.hardware_backend.xpu.quantization.modelopt import (
+                        XPUModelOptNvFp4A16LinearMethod,
+                    )
+
+                    return XPUModelOptNvFp4A16LinearMethod(self.nvfp4_config)
                 return ModelOptFp4LinearMethod(self.nvfp4_config)
             if quant_algo == "W4A16_NVFP4":
+                if is_xpu():
+                    from sglang.srt.hardware_backend.xpu.quantization.modelopt import (
+                        XPUModelOptNvFp4A16LinearMethod,
+                    )
+
+                    return XPUModelOptNvFp4A16LinearMethod(self.nvfp4a16_config)
                 return ModelOptNvFp4A16LinearMethod(self.nvfp4a16_config)
             return UnquantizedLinearMethod()
 
@@ -1098,6 +1102,12 @@ class ModelOptMixedPrecisionConfig(ModelOptQuantConfig):
             if quant_algo == "NVFP4":
                 return ModelOptNvFp4FusedMoEMethod(self.nvfp4_config)
             if quant_algo == "W4A16_NVFP4":
+                if is_xpu():
+                    from sglang.srt.hardware_backend.xpu.quantization.modelopt import (
+                        XPUModelOptNvFp4MoEMethod,
+                    )
+
+                    return XPUModelOptNvFp4MoEMethod(self.nvfp4a16_config)
                 return ModelOptNvFp4FusedMoEMethod(self.nvfp4a16_config)
             return None
 
@@ -1725,6 +1735,19 @@ class ModelOptFp4Config(ModelOptQuantConfig):
                     return None
                 return ModelOptNvFp4FusedMoEMethod(self)
             return None
+
+        if is_xpu():
+            from sglang.srt.hardware_backend.xpu.quantization.modelopt import (
+                XPUModelOptNvFp4A16LinearMethod,
+                XPUModelOptNvFp4MoEMethod,
+            )
+
+            return self._get_quant_method(
+                layer,
+                prefix,
+                Linear=XPUModelOptNvFp4A16LinearMethod,
+                Moe=XPUModelOptNvFp4MoEMethod,
+            )
 
         return self._get_quant_method(
             layer,
@@ -2379,12 +2402,7 @@ class ModelOptNvFp4FusedMoEMethod(FusedMoEMethodBase):
     def __init__(self, quant_config: ModelOptFp4Config):
         self.quant_config = quant_config
         moe_runner_backend = get_moe_runner_backend()
-        self._lora_marlin = moe_runner_backend.is_lora_marlin()
-        if moe_runner_backend.is_lora() and not self._lora_marlin:
-            raise ValueError(
-                "NVFP4 MoE LoRA requires --moe-runner-backend lora_marlin."
-            )
-        if (moe_runner_backend.is_auto() or moe_runner_backend.is_lora()) and is_cuda():
+        if moe_runner_backend.is_auto() and is_cuda():
             capability = get_device_capability()
             use_marlin_fallback = (8, 0) <= capability < (10, 0)
         else:
@@ -2506,8 +2524,7 @@ class ModelOptNvFp4FusedMoEMethod(FusedMoEMethodBase):
         weight_loader = self.prepare_weight_loader(
             layer, extra_weight_attrs.get("weight_loader")
         )
-        moe_runner_backend = get_moe_runner_backend()
-        if moe_runner_backend.is_flashinfer_megamoe():
+        if get_moe_runner_backend().is_flashinfer_megamoe():
             from sglang.srt.layers.moe.flashinfer_megamoe import (
                 make_nvfp4_megamoe_weight_loader,
             )
@@ -2558,16 +2575,13 @@ class ModelOptNvFp4FusedMoEMethod(FusedMoEMethodBase):
         )
         layer.register_parameter("w13_weight_scale", w13_weight_scale)
 
-        # AUTO is resolved later in create_moe_runner(); process_weights_after_loading()
-        # rebinds the swizzled scales for every backend that reads them.
-        skip_swizzled_blockscales = (
+        # TRTLLM replaces blockscale_swizzled with an alias to weight_scale
+        # during process_weights_after_loading, so skip the expensive
+        # swizzle+allocate here to avoid GPU memory fragmentation
+        if (
             self.enable_flashinfer_trtllm_moe
-            or moe_runner_backend.is_flashinfer_megamoe()
-            or moe_runner_backend.is_marlin()
-            or moe_runner_backend.is_lora_marlin()
-            or moe_runner_backend.is_auto()
-        )
-        if skip_swizzled_blockscales:
+            or get_moe_runner_backend().is_flashinfer_megamoe()
+        ):
             layer.w13_blockscale_swizzled = None
         else:
             layer.w13_blockscale_swizzled = Parameter(
@@ -2587,7 +2601,10 @@ class ModelOptNvFp4FusedMoEMethod(FusedMoEMethodBase):
         )
         layer.register_parameter("w2_weight_scale", w2_weight_scale)
 
-        if skip_swizzled_blockscales:
+        if (
+            self.enable_flashinfer_trtllm_moe
+            or get_moe_runner_backend().is_flashinfer_megamoe()
+        ):
             layer.w2_blockscale_swizzled = None
         else:
             layer.w2_blockscale_swizzled = Parameter(
@@ -2743,8 +2760,6 @@ class ModelOptNvFp4FusedMoEMethod(FusedMoEMethodBase):
         moe_runner_backend = getattr(
             self, "_moe_runner_backend", get_moe_runner_backend()
         )
-        if moe_runner_backend.is_lora_marlin():
-            moe_runner_backend = MoeRunnerBackend.MARLIN
         use_nvfp4_dispatch = _use_nvfp4_dispatch()
         if moe_runner_backend.is_marlin():
             # Marlin supports only a single shared w1/w3 weight scale, so collapse
@@ -3140,10 +3155,6 @@ class ModelOptNvFp4FusedMoEMethod(FusedMoEMethodBase):
             self.runner = None
             return
 
-        if moe_runner_backend.is_lora():
-            self.runner = None
-            return
-
         if moe_runner_backend.is_flashinfer_cutedsl():
             import sglang.srt.layers.moe.moe_runner.flashinfer_cutedsl  # noqa: F401 – triggers @register_fused_func
 
@@ -3218,7 +3229,6 @@ class ModelOptNvFp4FusedMoEMethod(FusedMoEMethodBase):
             and (
                 moe_runner_backend.is_flashinfer_trtllm()
                 or moe_runner_backend.is_flashinfer_megamoe()
-                or self._is_cutedsl_v2_standard
             )
         ), f"{activation=} is unsupported by {moe_runner_backend}"
 
