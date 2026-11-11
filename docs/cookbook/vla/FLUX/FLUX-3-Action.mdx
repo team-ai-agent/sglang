@@ -55,6 +55,8 @@ The video VAE runs its neighborhood attention on [NATTEN](https://natten.org) wh
 
 ## 3. Model Deployment
 
+This section provides deployment configurations for NVIDIA GPUs and Intel Arc Pro B-Series GPUs(codename: BMG (Battlemage)).
+
 Serve the DROID policy:
 
 ```bash Command
@@ -70,6 +72,16 @@ Serve a distilled variant:
 sglang serve black-forest-labs/flux-3-action-droid \
   --model-type diffusion \
   --model-variant gd \
+  --port 30000
+```
+
+Serve the DROID policy on Intel Arc Pro B-Series GPUs (BMG, single 24GB XPU):
+
+```bash Command
+sglang serve black-forest-labs/flux-3-action-droid \
+  --model-type diffusion \
+  --warmup-mode off \
+  --host 127.0.0.1 \
   --port 30000
 ```
 
