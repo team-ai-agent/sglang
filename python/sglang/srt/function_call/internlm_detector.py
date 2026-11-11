@@ -47,13 +47,14 @@ class InternlmDetector(BaseFormatDetector):
 
     def __init__(self):
         super().__init__()
-        self.bot_token = "<|action_start|> <|plugin|>"
+        self.bot_token = "<|action_start|><|plugin|>"
+        self.legacy_bot_token = "<|action_start|> <|plugin|>"
         self.eot_token = "<|action_end|>"
         self.position = 0
 
     def has_tool_call(self, text: str) -> bool:
         """Check if the text contains an InternLM format tool call."""
-        has_call = self.bot_token in text
+        has_call = self.bot_token in text or self.legacy_bot_token in text
         return has_call
 
     def get_arguments(self, obj):
@@ -75,6 +76,7 @@ class InternlmDetector(BaseFormatDetector):
         :return: StreamingParseResult with normal text and parsed tool calls.
         """
 
+        text = text.replace(self.legacy_bot_token, self.bot_token)
         # Find the first occurrence of tool call marker to extract normal text
         idx = text.find(self.bot_token)
         normal_text = text[:idx].strip() if idx != -1 else text
@@ -161,6 +163,7 @@ class InternlmDetector(BaseFormatDetector):
         Supports a single tool call in streaming mode.
         """
         self._buffer += new_text
+        self._buffer = self._buffer.replace(self.legacy_bot_token, self.bot_token)
         current_text = self._buffer
 
         # Check if we don't have a tool call start marker
@@ -173,7 +176,10 @@ class InternlmDetector(BaseFormatDetector):
                 return StreamingParseResult(normal_text="")
 
             # Check if buffer could be partial start of bot_token
-            if not self._ends_with_partial_token(current_text, self.bot_token):
+            if not any(
+                self._ends_with_partial_token(current_text, token)
+                for token in (self.bot_token, self.legacy_bot_token)
+            ):
                 # Not a partial match, return as normal text
                 normal_text = current_text
                 self._buffer = ""
