@@ -74,10 +74,6 @@ Measured with SGLang main `c7be3e9` (2026-09-29) on RTX 4090 24 GB (PCIe, no P2P
 
 Component CPU offload (`--dit-cpu-offload`) does not help here: it moves the whole DiT onto the GPU around each use.
 
-### 3.4 Intel Arc Pro B-Series
-
-The BMG selector covers `Wan-AI/Wan2.1-T2V-1.3B-Diffusers` on four Arc Pro B60 24 GB GPUs with TP=4, without LoRA. The selector's unchanged `/v1/videos` request completed on XPU and produced a directly inspected 832x480 video with 93 frames at 24 fps. This establishes basic text-to-video generation only; the 14B checkpoints, image-to-video, LoRA and performance are not validated by this recipe.
-
 ## 4. Model Invocation
 
 ### 4.1 Basic Usage

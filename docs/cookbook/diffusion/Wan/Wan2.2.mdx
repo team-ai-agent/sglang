@@ -20,21 +20,6 @@ Follow the [SGLang Diffusion installation guide](/docs/sglang-diffusion/installa
 
 <Deployment config={config} />
 
-### Intel Arc Pro B-Series (BMG)
-
-The BMG selector covers `Wan-AI/Wan2.2-TI2V-5B-Diffusers` on four Intel Arc Pro
-B60 24 GB GPUs. Follow the [XPU installation guide](/docs/hardware-platforms/xpu).
-The recipe keeps components GPU-resident and retains the tested Level Zero
-queue/event settings; do not replace them with a forced legacy adapter.
-
-Native validation at SGLang revision `d50f98e7f8c281d6451935b2a475009f94201549`
-used the selector's unchanged video request, `A quiet street at dusk`, with no
-sampling overrides. The complete 1280x704, 97-frame, 24-fps video was decoded and
-visually inspected. This is a basic text-to-video check, not I2V, LoRA, or
-performance validation. The generic API's 1280x720 example is not aligned to
-this checkpoint's spatial grid; use the model-native default request shown by
-the selector.
-
 <a id="1-model-introduction" />
 
 ## 2. Model capabilities

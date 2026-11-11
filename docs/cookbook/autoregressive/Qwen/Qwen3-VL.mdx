@@ -28,8 +28,6 @@ Please refer to the [official SGLang installation guide](../../../docs/get-start
 
 For SGLang CPU installation, please refer to the [CPU version installation guide](../../../docs/hardware-platforms/cpu_server#installation).
 
-For Intel GPUs, see the [XPU installation guide](../../../docs/hardware-platforms/xpu).
-
 ## 3. Model Deployment
 
 This section provides deployment configurations optimized for different hardware platforms and use cases.
@@ -54,7 +52,6 @@ import { Qwen3VLDeployment } from "/src/snippets/autoregressive/qwen3-vl-deploym
 * **Kernel Tuning** : For MoE Triton kernel tuning on your specific hardware, refer to [fused_moe_triton](https://github.com/sgl-project/sglang/tree/main/benchmark/kernels/fused_moe_triton).
 
 **Hardware-specific notes:**
-- **BMG (Intel Arc Pro B-Series):** The selector includes only the natively verified `Qwen/Qwen3-VL-32B-Instruct-FP8` TP=4 configuration. Validation covered basic text generation with a 16K context limit, static memory fraction 0.8, four request slots and the recorded queue/event controls. Image/video understanding, full 262K context, Thinking, tool calling and other sizes or precisions were not verified by this run. Only Tensor Parallel (TP) is supported by this recipe; no EP/DP configuration is enabled.
 - **H100 (FP8):** Use the `Qwen/Qwen3-VL-235B-A22B-Instruct-FP8` checkpoint for best memory efficiency.
 - **A100 / H100 (BF16):** Use standard multimodal parameters to manage throughput and GPU memory usage.
 - **H200 / B200:** Runs out of the box, supporting full context length plus concurrent image + video processing.
