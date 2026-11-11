@@ -105,7 +105,7 @@ The Gemma 4 series offers models in various sizes and architectures, optimized f
 
 ### 3.2 Configuration Tips
 
-- SGLang automatically selects the Triton attention backend for Gemma 4 models (required for bidirectional image-token attention during prefill).
+- The default Triton attention backend preserves bidirectional image-token attention during prefill. The Intel XPU path below also supports the native image mask; a plain causal backend degrades image quality.
 - **Attention backend on Blackwell (B200/sm100)**: SGLang defaults to the `trtllm_mha` backend on sm100, which is fastest for text but applies *causal* attention to image tokens. For multimodal (image) workloads on B200, pass `--attention-backend triton` to restore bidirectional image-token attention and full vision quality. Text-only and audio workloads are unaffected by the default.
 - **Attention backend on Intel XPU (BMG)**: for the 12B, 26B-A4B and 31B models (`use_bidirectional_attention: "vision"`), `--attention-backend intel_xpu` gives image tokens bidirectional attention within each image on the sliding-window layers, while full-attention layers stay causal, as in Hugging Face; E2B and E4B keep image tokens causal. The sgl-kernel-xpu mask has no sliding-window variant, so it applies only while the longest sequence in the prefill batch, counting its cached prefix, fits in the 1024-token window; otherwise image tokens fall back to causal attention for the whole batch. A short image request batched with a long prompt, or sent after a long chat history, loses it too. For document and OCR workloads, `--mm-process-config '{"image":{"max_soft_tokens":560}}'` keeps a single image with a short prompt inside the window; 1120 does not.
 - **Gemma 4 26B-A4B on B200**: Use `--mem-fraction-static 0.75` to leave workspace headroom for the Triton MoE path.
@@ -170,6 +170,27 @@ SGLANG_USE_AITER=0 sglang serve --model-path google/gemma-4-E4B-it \
 For `gemma-4-31B-it` and `gemma-4-26B-A4B-it`, the same commands above work on MI300X, MI325X, and MI355X without additional command-line changes.
 
 > **Status**: AMD benchmarks are available in [Section 5.1](#5-1-speed-benchmark).
+
+### 3.4 Intel XPU: encoder-free 12B
+
+Use an Intel XPU build containing native `Gemma4UnifiedConfig` loading, Gemma4 image attention for `intel_xpu`, and source video-timestamp preservation. Both `google/gemma-4-12B-it` and `google/gemma-4-12B-it-qat-q4_0-unquantized` were validated with this recipe on Linux with one Arc Pro B60 (24 GiB), PyTorch `2.14.0+xpu`, transformers `5.19.0`, and `sglang-kernel-xpu` `0.4.0`. Change the model path to select the checkpoint. You need access to the gated checkpoint or an already downloaded local model path.
+
+```bash Command
+python -m sglang.launch_server \
+  --model-path google/gemma-4-12B-it-qat-q4_0-unquantized \
+  --device xpu --tp-size 1 --host 127.0.0.1 --port 30000 \
+  --attention-backend intel_xpu --linear-attn-backend intel_xpu \
+  --reasoning-parser gemma4 --tool-call-parser gemma4 \
+  --mem-fraction-static 0.98 --max-running-requests 1 \
+  --disable-radix-cache --disable-overlap-schedule \
+  --chunked-prefill-size 1024 --context-length 8192 \
+  --json-model-override-args '{"text_config":{"max_position_embeddings":8192}}' \
+  --model-loader-extra-config '{"enable_multithread_load":false}'
+```
+
+The QAT release stores BF16 weights, not packed 4-bit weights. The 8K position override bounds RoPE buffers without changing their values within the served context. Disabling overlap and bounding prefill size keep the no-radix SWA reservation within this card's memory budget.
+
+Image prefill applies the native bidirectional block overlay only to sliding-window layers; global layers remain causal. Keep each image block within a prefill chunk. The validated requests cover text, thinking on/off, normal and streamed tools, images, multiple images, video ordering and timestamps, and audio transcription. They do not establish maximum-context, speculative-decoding, cache-enabled, or performance results.
 
 ## 4. Model Invocation
 
