@@ -26,7 +26,7 @@ return Qwen3Deployment();`,
 );
 const snapshot = new URL('qwen3-existing-commands.snapshot.json', import.meta.url);
 
-test('existing commands remain identical for non-XPU and BMG BF16 selections', () => {
+test('existing commands remain identical for non-XPU and original BMG BF16 selections', () => {
   const { baseOptions, values } = render({});
   const names = Object.keys(baseOptions).filter((name) => name !== 'hardware');
   const result = {};
@@ -44,7 +44,9 @@ test('existing commands remain identical for non-XPU and BMG BF16 selections', (
         return;
       }
       for (const item of option.items.filter((item) =>
-        !item.disabled && !(hardware.id === 'arc_b' && name === 'quantization' && item.id !== 'bf16'))) {
+        !item.disabled &&
+        !(hardware.id === 'arc_b' && name === 'quantization' && item.id !== 'bf16') &&
+        !(hardware.id === 'arc_b' && name === 'modelsize' && item.id === '14b'))) {
         visit(index + 1, { ...selection, [name]: item.id });
       }
     };
@@ -58,6 +60,29 @@ test('existing commands remain identical for non-XPU and BMG BF16 selections', (
     writeFileSync(snapshot, JSON.stringify(result, null, 2) + '\n');
   } else {
     assert.deepEqual(result, JSON.parse(readFileSync(snapshot, 'utf8')));
+  }
+});
+
+test('BMG 14B BF16 preserves its bounded TP4 recipe and rejects unsupported selections', () => {
+  const state = render({
+    hardware: 'h200', modelsize: '14b', category: 'base',
+    quantization: 'bf16', reasoningParser: 'enabled', toolcall: 'enabled',
+  }).update('hardware', 'arc_b');
+  assert.equal(state.modelsize, '14b');
+  assert.equal(state.reasoningParser, 'disabled');
+  assert.equal(state.toolcall, 'disabled');
+  const command = render(state).generateCommand();
+  for (const flag of [
+    '--model Qwen/Qwen3-14B', '--device xpu', '--attention-backend intel_xpu',
+    '--tp 4', '--page-size 64', '--context-length 16384',
+    '--mem-fraction-static 0.8', '--max-running-requests 4',
+  ]) assert.ok(command.includes(flag), flag);
+  for (const [name, value] of [
+    ['quantization', 'fp8'], ['category', 'thinking'],
+    ['reasoningParser', 'enabled'], ['toolcall', 'enabled'],
+  ]) {
+    assert.deepEqual(render(state).update(name, value), state);
+    assert.match(render({ ...state, [name]: value }).generateCommand(), /Select the validated BMG 14B BF16/);
   }
 });
 

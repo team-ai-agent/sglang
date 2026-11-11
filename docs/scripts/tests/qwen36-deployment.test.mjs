@@ -80,7 +80,7 @@ test('BMG resets incompatible state and rejects disabled selections', () => {
   };
   const bmg = getUpdatedValues(previous, 'hardware', 'arc_b');
   for (const [name, value] of [
-    ['modelSize', '27b'], ['quantization', 'nvfp4'],
+    ['modelSize', 'unknown'], ['quantization', 'nvfp4'],
     ['speculative', 'enabled'], ['mambaCache', 'v2'],
   ]) {
     assert.deepEqual(getUpdatedValues(bmg, name, value), bmg);
@@ -95,6 +95,23 @@ test('BMG FP8 emits only its separately validated bounded recipe', () => {
   const bmg = getUpdatedValues(initial, 'hardware', 'arc_b');
   const fp8 = getUpdatedValues(bmg, 'quantization', 'fp8');
   assert.equal(render(fp8).generateCommand(), 'UR_L0_USE_COPY_ENGINE=0 sglang serve --model-path Qwen/Qwen3.6-35B-A3B-FP8 \\\n  --device xpu --attention-backend intel_xpu \\\n  --tp 4 --linear-attn-backend intel_xpu --page-size 1 \\\n  --context-length 16384 --mem-fraction-static 0.8 --max-running-requests 4');
-  assert.deepEqual(getUpdatedValues(fp8, 'modelSize', '27b'), fp8);
+  const dense = getUpdatedValues(fp8, 'modelSize', '27b');
+  assert.equal(dense.modelSize, '27b');
+  assert.equal(dense.quantization, 'bf16');
+  assert.deepEqual(getUpdatedValues(dense, 'quantization', 'fp8'), dense);
   assert.deepEqual(getUpdatedValues(fp8, 'speculative', 'enabled'), fp8);
+});
+
+test('BMG 27B BF16 retains the bounded dense-model recipe', () => {
+  const { getUpdatedValues } = render({});
+  const bmg = getUpdatedValues(initial, 'hardware', 'arc_b');
+  const dense = getUpdatedValues(bmg, 'modelSize', '27b');
+  const command = render(dense).generateCommand();
+  for (const flag of [
+    '--model-path Qwen/Qwen3.6-27B', '--device xpu', '--tp 4',
+    '--linear-attn-backend intel_xpu', '--page-size 1',
+    '--reasoning-parser qwen3', '--context-length 16384',
+    '--mem-fraction-static 0.8', '--max-running-requests 4',
+  ]) assert.ok(command.includes(flag), flag);
+  assert.match(render({ ...dense, quantization: 'fp8' }).generateCommand(), /^# Select BMG/);
 });
