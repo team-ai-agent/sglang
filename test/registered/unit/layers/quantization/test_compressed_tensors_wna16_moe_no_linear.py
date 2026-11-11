@@ -50,6 +50,7 @@ def _make_wna16_moe_config(targets, num_bits, **weight_overrides):
     }
 
 
+@mock.patch.object(compressed_tensors, "_is_xpu", False)
 class TestWNA16MoENoLinearGroup(CustomTestCase):
     def _assert_wna16_moe(self, config_dict, expected_bits):
         quant_config = CompressedTensorsConfig.from_config(config_dict)
@@ -69,6 +70,54 @@ class TestWNA16MoENoLinearGroup(CustomTestCase):
     def test_regex_expert_targets_int8(self):
         config = _make_wna16_moe_config(["re:.*mlp.experts.*"], num_bits=8)
         self._assert_wna16_moe(config, expected_bits=8)
+
+    def test_xpu_mixed_int4_int8_experts_do_not_select_cuda_marlin(self):
+        """Mixed checkpoint groups must retain their bit width on the XPU path."""
+        for bits in (4, 8):
+            quant_config = CompressedTensorsConfig.from_config(
+                _make_wna16_moe_config(["re:.*mlp.experts.*"], num_bits=bits)
+            )
+            with (
+                mock.patch.object(compressed_tensors, "_is_xpu", True),
+                mock.patch.object(compressed_tensors, "_is_npu", False),
+                mock.patch.object(compressed_tensors, "_is_hip", False),
+                mock.patch.object(
+                    compressed_tensors,
+                    "get_moe_runner_backend",
+                    return_value=MoeRunnerBackend.AUTO,
+                ),
+            ):
+                scheme = quant_config.get_moe_scheme(
+                    torch.nn.Module(), layer_name=EXPERTS_LAYER
+                )
+            self.assertIsInstance(scheme, CompressedTensorsWNA16TritonMoE)
+            self.assertEqual(scheme.num_bits, bits)
+
+    def test_int8_packed_projection_is_not_reinterpreted_as_int4(self):
+        """8-bit packed bytes must reach the W8A16 kernel, never the nibble kernel."""
+        scheme = CompressedTensorsWNA16TritonMoE.__new__(
+            CompressedTensorsWNA16TritonMoE
+        )
+        scheme.num_bits, scheme.group_size = 8, 128
+        layer = torch.nn.Module()
+        packed = torch.arange(256, dtype=torch.int64).to(torch.uint8).reshape(1, 2, 128)
+        layer.w13_weight_packed = torch.nn.Parameter(
+            packed.view(torch.int32).transpose(1, 2).contiguous(), requires_grad=False
+        )
+        layer.w2_weight_packed = torch.nn.Parameter(
+            layer.w13_weight_packed.detach().clone(), requires_grad=False
+        )
+        layer.w13_weight_scale = torch.nn.Parameter(
+            torch.ones(1, 1, 2), requires_grad=False
+        )
+        layer.w2_weight_scale = torch.nn.Parameter(
+            torch.ones(1, 1, 2), requires_grad=False
+        )
+        scheme.process_weights_after_loading(layer)
+        info = scheme.get_triton_quant_info(layer)
+        self.assertTrue(info.use_int8_w8a16)
+        self.assertFalse(info.use_int4_w4a16)
+        torch.testing.assert_close(info.w13_weight, packed)
 
     def test_per_layer_fqn_expert_targets_int4(self):
         config = _make_wna16_moe_config(PER_LAYER_EXPERT_TARGETS, num_bits=4)
@@ -104,7 +153,7 @@ class TestWNA16MoENoLinearGroup(CustomTestCase):
             "asymmetric": {"symmetric": False},
             "channel": {"strategy": "channel", "group_size": None},
             "group64": {"group_size": 64},
-            "actorder": {"actorder": "group"},
+            "actorder": {"actorder": "weight"},
         }
         for name, overrides in cases.items():
             with self.subTest(name=name):

@@ -499,7 +499,7 @@ class CompressedTensorsWNA16MoE(CompressedTensorsMoEScheme):
 
 
 class CompressedTensorsWNA16TritonMoE(CompressedTensorsWNA16MoE):
-    """W4A16 MoE method using Triton kernels instead of Marlin.
+    """W4A16/W8A16 MoE method using Triton kernels instead of Marlin.
 
     Inherits weight creation from CompressedTensorsWNA16MoE but converts
     weights to the uint8-packed format expected by the Triton fused MoE kernel
@@ -512,12 +512,12 @@ class CompressedTensorsWNA16TritonMoE(CompressedTensorsWNA16MoE):
 
         num_experts = layer.w13_weight_packed.shape[0]
 
-        # Convert w13 weights: [E, K//8, N] int32 -> [E, N, K//2] uint8
+        # [E, K//packed_factor, N] int32 -> [E, N, K*num_bits//8] uint8.
         w13 = layer.w13_weight_packed.data
         w13 = w13.transpose(1, 2).contiguous().view(torch.uint8)
         layer.w13_weight_packed = torch.nn.Parameter(w13, requires_grad=False)
 
-        # Convert w2 weights: [E, K//8, N] int32 -> [E, N, K//2] uint8
+        # Keep the checkpoint's unsigned offset encoding for both bit widths.
         w2 = layer.w2_weight_packed.data
         w2 = w2.transpose(1, 2).contiguous().view(torch.uint8)
         layer.w2_weight_packed = torch.nn.Parameter(w2, requires_grad=False)
@@ -546,7 +546,8 @@ class CompressedTensorsWNA16TritonMoE(CompressedTensorsWNA16MoE):
         return TritonMoeQuantInfo(
             w13_weight=layer.w13_weight_packed,
             w2_weight=layer.w2_weight_packed,
-            use_int4_w4a16=True,
+            use_int4_w4a16=self.num_bits == 4,
+            use_int8_w8a16=self.num_bits == 8,
             w13_scale=layer.w13_weight_scale,
             w2_scale=layer.w2_weight_scale,
             block_shape=[0, self.group_size],
