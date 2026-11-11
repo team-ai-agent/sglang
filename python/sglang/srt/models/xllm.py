@@ -53,7 +53,6 @@ from sglang.srt.layers.linear import (
     LinearParallelGroup,
     MergedColumnParallelLinear,
     QKVParallelLinear,
-    ReplicatedLinear,
     RowParallelLinear,
 )
 from sglang.srt.layers.logits_processor import LogitsProcessor
@@ -1371,12 +1370,12 @@ class XllmMoVAAttention(_XllmMoVAAttentionBase):
         self.source_router_gemm_partitions = _get_xllm_source_router_gemm_partitions(
             config
         )
-        self.v_router = ReplicatedLinear(
+        # The source-partition GEMM reads checkpoint-layout weights directly;
+        # ReplicatedLinear would AMX-pack them during CPU weight loading.
+        self.v_router = nn.Linear(
             config.hidden_size,
             self.num_values,
             bias=False,
-            quant_config=None,
-            prefix=add_prefix("v_router", prefix),
         )
         if getattr(config, "moe_gate_bias", False):
             # SGLang's fused sigmoid top-k requires correction bias in fp32.

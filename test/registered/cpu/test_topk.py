@@ -9,6 +9,7 @@ from sglang.srt.layers.moe.topk import (
     biased_grouped_topk_impl as native_biased_grouped_topk,
 )
 from sglang.srt.layers.moe.topk import biased_topk_impl as native_biased_topk
+from sglang.srt.layers.moe.topk import fused_topk_cpu
 from sglang.srt.layers.moe.topk import fused_topk_torch_native as native_fused_topk
 from sglang.srt.layers.moe.topk import grouped_topk_gpu as native_grouped_topk
 from sglang.srt.models.llama4 import Llama4MoE
@@ -174,6 +175,44 @@ class TestBiasedTopK(CustomTestCase):
 
 
 class TestTopK(CustomTestCase):
+    def test_unspecialized_expert_count(self):
+        torch.manual_seed(42)
+        for scoring_func, renormalize, with_bias, dtype in itertools.product(
+            ("softmax", "sigmoid"),
+            (False, True),
+            (False, True),
+            (torch.float32, torch.bfloat16),
+        ):
+            with self.subTest(
+                scoring_func=scoring_func, renormalize=renormalize,
+                with_bias=with_bias, dtype=dtype,
+            ):
+                hidden = torch.randn(17, 16, dtype=dtype)
+                logits = torch.randn(17, 100, dtype=dtype)
+                bias = torch.randn(100, dtype=dtype) if with_bias else None
+                weights, ids = fused_topk_cpu(
+                    hidden, logits, 4, renormalize, bias, scoring_func,
+                )
+                expected_weights, expected_ids = native_fused_topk(
+                    hidden, logits.float(), 4, renormalize,
+                    bias.float() if bias is not None else None, scoring_func,
+                )
+                self.assertEqual(weights.dtype, torch.float32)
+                self.assertEqual(ids.dtype, torch.int32)
+                torch.testing.assert_close(weights, expected_weights)
+                torch.testing.assert_close(ids.long(), expected_ids.long())
+
+    def test_unspecialized_expert_count_rejects_invalid_inputs(self):
+        hidden = torch.randn(2, 16)
+        logits = torch.randn(2, 100)
+        for topk in (0, 101):
+            with self.assertRaisesRegex(ValueError, "topk"):
+                fused_topk_cpu(hidden, logits, topk, True)
+        with self.assertRaisesRegex(ValueError, "tokens mismatch"):
+            fused_topk_cpu(hidden[:1], logits, 4, True)
+        with self.assertRaisesRegex(ValueError, "correction_bias"):
+            fused_topk_cpu(hidden, logits, 4, True, torch.zeros(99))
+
     def _run_single_test(self, M, E, topk, renormalize, dtype):
         torch.manual_seed(1998)
 
