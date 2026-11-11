@@ -183,7 +183,16 @@ def requantize_with_max_scale(
         for idx, logical_width in enumerate(logical_widths):
             end = start + logical_width
             weight_dq = per_tensor_dequantize(weight[start:end, :], weight_scale[idx])
-            weight[start:end, :], _ = scaled_fp8_quant(weight_dq, max_w_scale)
+            if weight.device.type == "cpu":
+                # The per-tensor quantization operator is GPU-only.
+                limits = torch.finfo(weight.dtype)
+                weight[start:end, :] = (
+                    (weight_dq / max_w_scale)
+                    .clamp(limits.min, limits.max)
+                    .to(weight.dtype)
+                )
+            else:
+                weight[start:end, :], _ = scaled_fp8_quant(weight_dq, max_w_scale)
             start = end
 
     return max_w_scale, weight
