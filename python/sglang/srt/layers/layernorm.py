@@ -1649,6 +1649,8 @@ class Gemma4RMSNorm(BaseFusedOp):
     def forward_xpu(self, x: torch.Tensor) -> torch.Tensor:
         if x.numel() == 0:
             return x
+        if x.stride(-1) != 1:
+            x = x.contiguous()
         if self.with_scale and self.scale_shift == 1.0:
             out = gemma_rmsnorm(x, self.weight.data, self.eps)
         else:

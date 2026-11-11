@@ -47,6 +47,22 @@ class TestGemma4RMSNormXPU(CustomTestCase):
         out = self.norm.forward_xpu(x)
         self.assertEqual(out.shape, (0, 128))
 
+    def test_audio_convolution_transpose(self):
+        """Audio depthwise-convolution outputs have a strided channel dimension."""
+        from sglang.srt.layers.layernorm import Gemma4RMSNorm
+
+        for shift in (0.0, 1.0):
+            for dtype in (torch.bfloat16, torch.float16):
+                with self.subTest(scale_shift=shift, dtype=dtype):
+                    norm = Gemma4RMSNorm(128, scale_shift=shift).to("xpu")
+                    x = torch.randn(2, 128, 7, dtype=dtype, device="xpu").transpose(
+                        1, 2
+                    )
+                    output = norm.forward_xpu(x)
+                    torch.testing.assert_close(
+                        output, norm.forward_native(x), rtol=1e-2, atol=1e-3
+                    )
+
 
 if __name__ == "__main__":
     unittest.main()
