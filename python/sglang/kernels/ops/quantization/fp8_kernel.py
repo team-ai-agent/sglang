@@ -26,6 +26,7 @@ from sglang.kernels.ops.quantization.fp8_utils import fp8_dtype_to_triton
 from sglang.srt.environ import envs
 from sglang.srt.utils import (
     ceil_align,
+    is_cpu,
     is_cuda,
     is_hip,
     is_musa,
@@ -34,6 +35,7 @@ from sglang.srt.utils import (
 from sglang.srt.utils.patch_torch import register_fake_if_exists
 
 _is_hip = is_hip()
+_is_cpu = is_cpu()
 _is_cuda = is_cuda()
 _is_musa = is_musa()
 _is_xpu = is_xpu()
@@ -1144,7 +1146,7 @@ Returns:
 Raises:
     AssertionError: If input is not 2D or if static scale's numel != 1
 """
-if _is_hip:
+if _is_hip or _is_cpu:
 
     def _native_dynamic_per_token_quant_fp8(output, input, scale):
         """Native PyTorch fallback for dynamic per-token FP8 quantization when AITER is disabled."""
@@ -1187,7 +1189,13 @@ if _is_hip:
         shape = input.shape
         if num_token_padding:
             shape = (max(num_token_padding, input.shape[0]), shape[1])
-        output = torch.empty(shape, device=input.device, dtype=fp8_dtype)
+        if _is_cpu:
+            # Avoid FP16 scale underflow and reduced-precision rounding.
+            input = input.float()
+            output = torch.zeros(shape, device=input.device, dtype=fp8_dtype)
+        else:
+            output = torch.empty(shape, device=input.device, dtype=fp8_dtype)
+        quant_output = output[: input.shape[0]] if _is_cpu else output
 
         if scale is None:
             # Dynamic scaling
@@ -1195,16 +1203,21 @@ if _is_hip:
                 scale = torch.empty(
                     (shape[0], 1), device=input.device, dtype=torch.float32
                 )
+                if _is_cpu:
+                    scale.fill_(1.0)
                 if _use_aiter:
                     dynamic_per_token_scaled_quant(output, input, scale)
                 else:
-                    _native_dynamic_per_token_quant_fp8(output, input, scale)
+                    quant_scale = scale[: input.shape[0]] if _is_cpu else scale
+                    _native_dynamic_per_token_quant_fp8(
+                        quant_output, input, quant_scale
+                    )
             else:
                 scale = torch.empty(1, device=input.device, dtype=torch.float32)
                 if _use_aiter:
                     dynamic_per_tensor_quant(output, input, scale)
                 else:
-                    _native_dynamic_per_tensor_quant_fp8(output, input, scale)
+                    _native_dynamic_per_tensor_quant_fp8(quant_output, input, scale)
         else:
             # Static scaling
             assert scale.numel() == 1, (
@@ -1213,7 +1226,7 @@ if _is_hip:
             if _use_aiter:
                 static_per_tensor_quant(output, input, scale)
             else:
-                _native_static_quant_fp8(output, input, scale)
+                _native_static_quant_fp8(quant_output, input, scale)
 
         return output, scale
 
