@@ -12,7 +12,8 @@ export const Qwen3VLDeployment = () => {
         { id: 'mi300x', label: 'MI300X', default: false },
         { id: 'mi325x', label: 'MI325X', default: false },
         { id: 'mi355x', label: 'MI355X', default: false },
-        { id: 'xeon', label: 'XEON', default: false }
+        { id: 'xeon', label: 'XEON', default: false },
+        { id: 'arc_b', label: 'BMG', default: false }
       ]
     },
     modelsize: {
@@ -158,8 +159,34 @@ export const Qwen3VLDeployment = () => {
     return () => observer.disconnect();
   }, []);
 
+  const bmgSelection = {
+    modelsize: '32b',
+    quantization: 'fp8',
+    thinking: 'instruct',
+    toolcall: 'disabled'
+  };
+
+  const applyRadioChange = (prev, optionName, value) => {
+    const next = { ...prev, [optionName]: value };
+    return next.hardware === 'arc_b' ? { ...next, ...bmgSelection } : next;
+  };
+
+  const getDisplayOptions = (state = values) => {
+    if (state.hardware !== 'arc_b') return options;
+    return Object.fromEntries(Object.entries(options).map(([key, option]) => [
+      key,
+      {
+        ...option,
+        items: option.items.map(item => ({
+          ...item,
+          disabled: item.disabled || (key in bmgSelection && item.id !== bmgSelection[key])
+        }))
+      }
+    ]));
+  };
+
   const handleRadioChange = (optionName, value) => {
-    setValues(prev => ({ ...prev, [optionName]: value }));
+    setValues(prev => applyRadioChange(prev, optionName, value));
   };
 
   // Generate command
@@ -167,6 +194,25 @@ export const Qwen3VLDeployment = () => {
     const { hardware, modelsize, quantization, thinking, toolcall } = values;
     const commandKey = `${hardware}-${modelsize}-${quantization}-${thinking}`;
     const isXeon = hardware === 'xeon';
+
+    if (hardware === 'arc_b') {
+      if (Object.entries(bmgSelection).some(([key, value]) => values[key] !== value)) {
+        return '# Select 32B, FP8, Instruct and disabled tool calling for the validated BMG recipe.';
+      }
+      return 'UR_L0_USE_COPY_ENGINE=0 \\\n' +
+        'UR_L0_USE_IMMEDIATE_COMMANDLISTS=0 \\\n' +
+        'UR_L0_USE_DRIVER_COUNTER_BASED_EVENTS=0 \\\n' +
+        'UR_L0_DISABLE_EVENTS_CACHING=1 \\\n' +
+        'sglang serve \\\n' +
+        '  --model Qwen/Qwen3-VL-32B-Instruct-FP8 \\\n' +
+        '  --device xpu \\\n' +
+        '  --attention-backend intel_xpu \\\n' +
+        '  --tp 4 \\\n' +
+        '  --page-size 64 \\\n' +
+        '  --context-length 16384 \\\n' +
+        '  --mem-fraction-static 0.8 \\\n' +
+        '  --max-running-requests 4';
+    }
 
     // Special error handling
     if (commandKey === 'h100-235b-bf16-instruct' || commandKey === 'h100-235b-bf16-thinking') {
@@ -245,7 +291,7 @@ export const Qwen3VLDeployment = () => {
 
   return (
     <div style={containerStyle} className="not-prose">
-      {Object.entries(options).map(([key, option]) => (
+      {Object.entries(getDisplayOptions()).map(([key, option]) => (
         <div key={key} style={cardStyle}>
           <div style={titleStyle}>{option.title}</div>
           <div style={itemsStyle}>
