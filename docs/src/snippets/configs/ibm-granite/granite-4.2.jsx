@@ -3,7 +3,11 @@ export const config = {
 
   latencyPercentile: "P50",
 
-  supportedHardware: ["h200", "b200"],
+  supportedHardware: ["h200", "b200", "xeon"],
+  hardware: [
+    { id: "xeon", label: "XEON", vram: "CPU", vendor: "cpu" },
+  ],
+  runModes: (base) => base.hw === "xeon" ? ["python"] : ["python", "docker"],
 
   variants: [
     { id: "3b", label: "3B", subtitle: "Dense" },
@@ -63,18 +67,22 @@ export const config = {
   },
 
   playgroundFeatures: {
+    normalizeDeltas: (deltas, derived, base) => base.hw === "xeon" ? {} : deltas,
     attention: {
+      showWhen: (base) => base.hw !== "xeon",
       knobs: [
         { id: "tp", label: "TP", values: [null, 1, 2, 4, 8] },
       ],
     },
     parsers: {
+      showWhen: (base) => base.hw !== "xeon",
       items: [
         { id: "reasoning", label: "Reasoning Parser", flag: "--reasoning-parser auto" },
         { id: "toolCall", label: "Tool Call Parser", flag: "--tool-call-parser auto" },
       ],
     },
     pdDisagg: {
+      showWhen: (base) => base.hw !== "xeon",
       modes: [
         { id: "off", label: "Off" },
         { id: "prefill", label: "Prefill role" },
@@ -87,6 +95,7 @@ export const config = {
       ibDevices: [{ id: "auto", label: "Auto" }, "mlx5_0", "mlx5_7"],
     },
     hicache: {
+      showWhen: (base) => base.hw !== "xeon",
       backends: [
         { id: null, label: "Auto" },
         { id: "file", label: "File" },
@@ -104,6 +113,51 @@ export const config = {
   },
 
   cells: [
+    {
+      match: { hw: "xeon", variant: "3b", quant: "bf16", strategy: "balanced", nodes: "single" },
+      verified: true,
+      warn: "Before serving on CPU, export SGLANG_USE_CPU_ENGINE=1 in your shell. Only basic text generation has been checked; full context, Playground overrides, dataset accuracy, and performance are unverified.",
+      env: [],
+      omitDefaultServerAddress: true,
+      flags: [
+        "--model {{MODEL_NAME}}",
+        "--device cpu",
+        "--disable-overlap-schedule",
+        "--tp 6",
+        "--host {{HOST_IP}}",
+        "--port {{PORT}}",
+      ],
+    },
+    {
+      match: { hw: "xeon", variant: "8b", quant: "bf16", strategy: "balanced", nodes: "single" },
+      verified: true,
+      warn: "Before serving on CPU, export SGLANG_USE_CPU_ENGINE=1 in your shell. Only basic text generation has been checked; full context, Playground overrides, dataset accuracy, and performance are unverified.",
+      env: [],
+      omitDefaultServerAddress: true,
+      flags: [
+        "--model {{MODEL_NAME}}",
+        "--device cpu",
+        "--disable-overlap-schedule",
+        "--tp 6",
+        "--host {{HOST_IP}}",
+        "--port {{PORT}}",
+      ],
+    },
+    {
+      match: { hw: "xeon", variant: "30b", quant: "bf16", strategy: "balanced", nodes: "single" },
+      verified: true,
+      warn: "Before serving on CPU, export SGLANG_USE_CPU_ENGINE=1 in your shell. Only basic text generation has been checked; full context, Playground overrides, dataset accuracy, and performance are unverified.",
+      env: [],
+      omitDefaultServerAddress: true,
+      flags: [
+        "--model {{MODEL_NAME}}",
+        "--device cpu",
+        "--disable-overlap-schedule",
+        "--tp 6",
+        "--host {{HOST_IP}}",
+        "--port {{PORT}}",
+      ],
+    },
     {
       match: { hw: "h200", variant: "3b", quant: "bf16", strategy: "balanced", nodes: "single" },
       verified: true,

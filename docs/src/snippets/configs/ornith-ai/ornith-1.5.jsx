@@ -3,7 +3,11 @@
 export const config = {
   modelName: "Ornith-1.5",
 
-  supportedHardware: ["h100", "h200"],
+  supportedHardware: ["h100", "h200", "xeon"],
+  hardware: [
+    { id: "xeon", label: "XEON", vram: "CPU", vendor: "cpu" },
+  ],
+  runModes: (s) => s.hw === "xeon" ? ["python"] : ["python", "docker"],
 
   showPlaygroundLink: false,
 
@@ -68,7 +72,41 @@ export const config = {
     cookbookModel: "ornith-ai/Ornith-1.5",
   },
 
+  playgroundFeatures: {
+    normalizeDeltas: (deltas, derived, base) => base.hw === "xeon" ? {} : deltas,
+  },
+
   cells: [
+    {
+      match: { hw: "xeon", variant: "9b", quant: "bf16", strategy: "balanced", nodes: "single" },
+      verified: true,
+      warn: "Before serving on CPU, export SGLANG_USE_CPU_ENGINE=1 in your shell. Only basic text generation has been checked; full context, Playground overrides, dataset accuracy, and performance are unverified.",
+      env: [],
+      omitDefaultServerAddress: true,
+      flags: [
+        "--model ornith-ai/Ornith-1.5-9B",
+        "--device cpu",
+        "--disable-overlap-schedule",
+        "--tp 6",
+        "--host {{HOST_IP}}",
+        "--port {{PORT}}",
+      ],
+    },
+    {
+      match: { hw: "xeon", variant: "35b", quant: "bf16", strategy: "balanced", nodes: "single" },
+      verified: true,
+      warn: "Before serving on CPU, export SGLANG_USE_CPU_ENGINE=1 in your shell. Only basic text generation has been checked; full context, Playground overrides, dataset accuracy, and performance are unverified.",
+      env: [],
+      omitDefaultServerAddress: true,
+      flags: [
+        "--model ornith-ai/Ornith-1.5-35B-A3B",
+        "--device cpu",
+        "--disable-overlap-schedule",
+        "--tp 6",
+        "--host {{HOST_IP}}",
+        "--port {{PORT}}",
+      ],
+    },
     {
       match: { hw: "h100", variant: "122b", quant: "bf16", strategy: "balanced", nodes: "single" },
       env: [],

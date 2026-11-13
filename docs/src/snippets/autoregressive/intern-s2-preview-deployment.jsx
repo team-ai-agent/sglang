@@ -5,6 +5,7 @@ export const InternS2PreviewDeployment = () => {
       title: 'Hardware Platform',
       items: [
         { id: 'h200', label: 'H200', default: true },
+        { id: 'xeon', label: 'XEON', default: false },
       ],
     },
     reasoning: {
@@ -64,10 +65,27 @@ export const InternS2PreviewDeployment = () => {
   }, []);
 
   const handleRadioChange = (optionName, value) => {
-    setValues((prev) => ({ ...prev, [optionName]: value }));
+    setValues((prev) => {
+      if (prev.hardware === 'xeon' && optionName !== 'hardware') return prev;
+      const next = { ...prev, [optionName]: value };
+      if (optionName === 'hardware' && value === 'xeon') {
+        next.reasoning = 'disabled';
+        next.toolcall = 'disabled';
+        next.mtp = 'disabled';
+      }
+      return next;
+    });
   };
 
   const generateCommand = () => {
+    if (values.hardware === 'xeon') {
+      return `sglang serve \\
+  --model internLM/Intern-S2-Preview \\
+  --device cpu \\
+  --disable-overlap-schedule \\
+  --tp 4 \\
+  --host 0.0.0.0`;
+    }
     const { reasoning, toolcall, mtp } = values;
     const tpValue = 8;
 
@@ -141,19 +159,28 @@ export const InternS2PreviewDeployment = () => {
 
   return (
     <div style={containerStyle} className="not-prose">
+      {values.hardware === 'xeon' && (
+        <p>Before serving on CPU, export <code>SGLANG_USE_CPU_ENGINE=1</code> in your shell.</p>
+      )}
       {Object.entries(options).map(([key, option]) => (
         <div key={key} style={cardStyle}>
           <div style={titleStyle}>{option.title}</div>
           <div style={itemsStyle}>
             {option.items.map((item) => {
               const isChecked = values[option.name] === item.id;
+              const isDisabled = values.hardware === 'xeon' && key !== 'hardware';
               return (
-                <label key={item.id} style={{ ...labelBaseStyle, ...(isChecked ? checkedStyle : {}) }}>
+                <label
+                  key={item.id}
+                  title={isDisabled ? 'Only basic text generation has been validated on Intel Xeon CPUs; parsers and MTP are not enabled.' : undefined}
+                  style={{ ...labelBaseStyle, ...(isChecked ? checkedStyle : {}), ...(isDisabled ? { opacity: 0.5, cursor: 'not-allowed' } : {}) }}
+                >
                   <input
                     type="radio"
                     name={option.name}
                     value={item.id}
                     checked={isChecked}
+                    disabled={isDisabled}
                     onChange={() => handleRadioChange(option.name, item.id)}
                     style={{ display: 'none' }}
                   />
