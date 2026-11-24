@@ -541,6 +541,28 @@ class TestConversationGetPrompt(CustomTestCase):
         self.assertIn("USER: <image>Describe this\n", prompt)
         self.assertIn("ASSISTANT: It shows a cat<eos>", prompt)
 
+    def test_paddle_ocr_newline_single_turn(self):
+        conv = chat_templates["paddle-ocr-newline"].copy()
+        conv.append_message("User", "Q")
+        conv.append_message("Assistant", None)
+        self.assertEqual(
+            conv.get_prompt(), "<|begin_of_sentence|>User: Q\nAssistant:\n"
+        )
+        self.assertEqual(conv.stop_str, ["</s>"])
+
+    def test_paddle_ocr_newline_multiturn_with_image(self):
+        conv = chat_templates["paddle-ocr-newline"].copy()
+        conv.append_message("User", "Q")
+        conv.append_message("Assistant", "A")
+        conv.append_message("User", conv.image_token + "\nQ2")
+        conv.append_message("Assistant", None)
+        self.assertEqual(
+            conv.get_prompt(),
+            "<|begin_of_sentence|>User: Q\nAssistant:\nA</s>User: "
+            + conv.image_token
+            + "Q2\nAssistant:\n",
+        )
+
     def test_invalid_sep_style_raises(self):
         """Test that an invalid SeparatorStyle raises ValueError."""
         conv = Conversation(

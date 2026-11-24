@@ -181,6 +181,23 @@ class TemplateManager:
         else:
             # Guess chat template from model path
             self.guess_chat_template_from_model_path(model_path)
+            if self._chat_template_name == "paddle-ocr" and tokenizer_manager.tokenizer:
+                hf_template = self._resolve_hf_chat_template(tokenizer_manager)
+                if hf_template:
+                    # Check the checkpoint rather than relying on its directory name.
+                    prompt = tokenizer_manager.tokenizer.apply_chat_template(
+                        [{"role": "user", "content": [{"type": "text", "text": "Q"}]}],
+                        chat_template=hf_template,
+                        tokenize=False,
+                        add_generation_prompt=True,
+                    )
+                    if prompt.endswith("Assistant:\n"):
+                        self._chat_template_name = "paddle-ocr-newline"
+                    elif not prompt.endswith("Assistant: "):
+                        raise ValueError(
+                            "Unrecognized PaddleOCR assistant prefix; "
+                            "specify an explicit --chat-template."
+                        )
 
             # If no pre-defined template was found, fallback to HuggingFace template
             if self._chat_template_name is None:
