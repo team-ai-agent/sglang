@@ -1040,6 +1040,7 @@ class UnquantizedLinearMethod(LinearMethodBase):
         if tiled is not None and bias is None and tiled_gemm_applies(x, tiled):
             return tiled_gemm(x, tiled, *layer.weight.shape)
         if use_intel_amx_backend(layer):
+            x = x.contiguous()
             x_shapes = x.shape
             if len(x_shapes) == 3:
                 x = x.view(-1, x.shape[-1])
