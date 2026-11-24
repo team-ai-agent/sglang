@@ -39,7 +39,7 @@ void extend_attention_kernel_impl(
     const index_t* __restrict__ extend_seq_lens,
     const index_t* __restrict__ extend_start_loc,
     const void* __restrict__ buffer,
-    const scalar_t* __restrict__ sinks,
+    const float* __restrict__ sinks,
     const bool* __restrict__ tree_mask,
     int batches,
     int num_heads,
@@ -68,7 +68,8 @@ void extend_attention_kernel_impl(
     bool is_causal,
     bool kv_from_cache,
     bool has_encoder_lens,
-    bool has_sink) {
+    bool has_sink,
+    int64_t sink_stride) {
   // strides
   const int o_strideM = num_heads * head_size_v;
   const int o_strideH = head_size_v;
@@ -355,7 +356,8 @@ void extend_attention_kernel_impl(
       scalar_t* __restrict__ out_ptr = o_extend + (seq_extend_start_loc + m) * o_strideM + head_id * o_strideH;
       for (int row = 0; row < m_size; ++row) {
         if (has_sink) {
-          s_prime[row] += std::exp(sinks[head_id] - m_prime[row]);
+          const int64_t sink_index = (seq_extend_start_loc + m + row) * sink_stride + head_id;
+          s_prime[row] += std::exp(sinks[sink_index] - m_prime[row]);
         }
         float s = 1 / s_prime[row];
         copy_stub<scalar_t>(out_ptr + row * o_strideM, v_prime + row * head_size_v, s, head_size_v);
@@ -403,7 +405,7 @@ inline int resize_buffer(at::Tensor& buffer, int num_threads, int head_size, int
         extend_seq_lens.data_ptr<index_t>(),                                               \
         extend_start_loc.data_ptr<index_t>(),                                              \
         buffer.data_ptr(),                                                                 \
-        sinks_tensor.data_ptr<scalar_t>(),                                                 \
+        sinks_tensor.data_ptr<float>(),                                                    \
         tree_mask_ptr,                                                                     \
         num_seqs,                                                                          \
         num_heads,                                                                         \
@@ -432,7 +434,8 @@ inline int resize_buffer(at::Tensor& buffer, int num_threads, int head_size, int
         is_causal,                                                                         \
         kv_from_cache,                                                                     \
         has_encoder_lens,                                                                  \
-        has_sink);                                                                         \
+        has_sink,                                                                          \
+        sink_stride);                                                                      \
   } while (0)
 
 // q_extend, k_extend, v_extend, o_extend: contiguous tensors
@@ -450,7 +453,7 @@ inline int resize_buffer(at::Tensor& buffer, int num_threads, int head_size, int
 // extend_seq_lens: [num_seqs]
 // extend_start_loc: [num_seqs]
 // encoder_lens: [num_seqs] int64 or None
-// sinks: [num_heads] or None
+// sinks: [num_heads], [num_queries, num_heads], or None
 // tree_mask: [num_seqs * max_len_extend * max_len_extend] bool or None
 //   TreeMaskMode::QLEN_ONLY tree mask for speculative TARGET_VERIFY; see [NOTE] 5 above.
 void extend_attention_cpu(
@@ -568,9 +571,19 @@ void extend_attention_cpu(
     CHECK_EQ(encoder_lens_t.size(0), num_seqs);
   }
   bool has_sink = sinks.has_value();
-  at::Tensor sinks_tensor = has_sink ? sinks.value() : at::empty({num_heads}, q_extend.options());
-  CHECK_DIM(1, sinks_tensor);
-  CHECK_EQ(sinks_tensor.size(0), num_heads);
+  at::Tensor sinks_tensor = has_sink ? sinks.value() : at::empty({num_heads}, q_extend.options().dtype(at::kFloat));
+  TORCH_CHECK(sinks_tensor.device().is_cpu(), "extend: sinks must be on CPU");
+  TORCH_CHECK(
+      (sinks_tensor.dim() == 1 && sinks_tensor.size(0) == num_heads) ||
+          (sinks_tensor.dim() == 2 && sinks_tensor.size(0) == q_extend.size(0) &&
+           sinks_tensor.size(1) == num_heads),
+      "extend: sinks must have shape [num_heads] or [num_queries, num_heads]");
+  TORCH_CHECK(
+      sinks_tensor.scalar_type() == at::kFloat || sinks_tensor.scalar_type() == at::kHalf ||
+          sinks_tensor.scalar_type() == at::kBFloat16,
+      "extend: sinks must have dtype float32, float16 or bfloat16");
+  const int64_t sink_stride = sinks_tensor.dim() == 2 ? num_heads : 0;
+  sinks_tensor = sinks_tensor.to(at::kFloat).contiguous();
 
   const bool* tree_mask_ptr = nullptr;
   if (tree_mask.has_value()) {

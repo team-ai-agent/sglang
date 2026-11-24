@@ -1200,14 +1200,15 @@ template <typename scalar_t>
 void decode_accumulate_kv_splits(
     scalar_t* __restrict__ output,
     float* __restrict__ attn_logits,
-    const scalar_t* __restrict__ sinks_ptr,
+    const float* __restrict__ sinks_ptr,
     int64_t batches,
     int64_t num_heads,
     int64_t head_size_v,
     int64_t num_kv_splits,
     int64_t l_stride1,
     int64_t l_stride2,
-    bool has_sink) {
+    bool has_sink,
+    int64_t sink_stride) {
   using Vec = at::vec::Vectorized<float>;
 
   // parallel on [batches, num_heads]
@@ -1246,7 +1247,7 @@ void decode_accumulate_kv_splits(
         m_prime = m_i;
       }
       if (has_sink) {
-        s_prime += std::exp(sinks_ptr[ni] - m_prime);
+        s_prime += std::exp(sinks_ptr[bi * sink_stride + ni] - m_prime);
       }
       copy_stub<scalar_t>(output + i * head_size_v, acc, 1 / s_prime, head_size_v);
       // move to the next index
@@ -1268,7 +1269,7 @@ void decode_attention_kernel_impl(
     const int64_t* __restrict__ req_pool_indices,
     const int64_t* __restrict__ seq_lens,
     const int64_t* __restrict__ encoder_lens,
-    const scalar_t* __restrict__ sinks,
+    const float* __restrict__ sinks,
     int64_t batches,
     int64_t num_heads,
     int64_t head_size,
@@ -1288,7 +1289,8 @@ void decode_attention_kernel_impl(
     int64_t sliding_window_size,
     bool is_cross_attn,
     bool has_encoder_lens,
-    bool has_sink) {
+    bool has_sink,
+    int64_t sink_stride) {
   using Vec = at::vec::Vectorized<float>;
 
   // strides
@@ -1411,7 +1413,7 @@ void decode_attention_kernel_impl(
   });
 
   decode_accumulate_kv_splits(
-      output, attn_logits, sinks, batches, num_heads, head_size_v, num_kv_splits, l_stride1, l_stride2, has_sink);
+      output, attn_logits, sinks, batches, num_heads, head_size_v, num_kv_splits, l_stride1, l_stride2, has_sink, sink_stride);
 }  // MHA
 
 template <typename scalar_t, typename packed_t, typename index_t, int64_t BLOCK_N>
@@ -1427,7 +1429,7 @@ void decode_attention_mla_kernel_impl(
     const int64_t* __restrict__ req_pool_indices,
     const int64_t* __restrict__ seq_lens,
     scalar_t* __restrict__ buffer,
-    const scalar_t* __restrict__ sinks,
+    const float* __restrict__ sinks,
     int64_t batches,
     int64_t num_heads,
     int64_t head_size,
@@ -1445,7 +1447,8 @@ void decode_attention_mla_kernel_impl(
     int64_t max_context_len,
     int64_t max_total_num_tokens,
     int64_t buffer_size_per_thread,
-    bool has_sink) {
+    bool has_sink,
+    int64_t sink_stride) {
   using Vec = at::vec::Vectorized<float>;
 
   // block length for heads
@@ -1612,7 +1615,7 @@ void decode_attention_mla_kernel_impl(
   });
 
   decode_accumulate_kv_splits(
-      output, attn_logits, sinks, batches, num_heads, head_size_v, num_kv_splits, l_stride1, l_stride2, has_sink);
+      output, attn_logits, sinks, batches, num_heads, head_size_v, num_kv_splits, l_stride1, l_stride2, has_sink, sink_stride);
 }  // MLA
 
 template <typename scalar_t, typename packed_t, typename index_t, int64_t BLOCK_N>
@@ -1628,7 +1631,7 @@ void decode_attention_grouped_kernel_impl(
     const int64_t* __restrict__ req_pool_indices,
     const int64_t* __restrict__ seq_lens,
     const int64_t* __restrict__ encoder_lens,
-    const scalar_t* __restrict__ sinks,
+    const float* __restrict__ sinks,
     int64_t batches,
     int64_t num_heads,
     int64_t num_heads_kv,
@@ -1649,7 +1652,8 @@ void decode_attention_grouped_kernel_impl(
     int64_t sliding_window_size,
     bool is_cross_attn,
     bool has_encoder_lens,
-    bool has_sink) {
+    bool has_sink,
+    int64_t sink_stride) {
   using Vec = at::vec::Vectorized<float>;
 
   // block length for heads
@@ -1798,7 +1802,7 @@ void decode_attention_grouped_kernel_impl(
   });
 
   decode_accumulate_kv_splits(
-      output, attn_logits, sinks, batches, num_heads, head_size_v, num_kv_splits, l_stride1, l_stride2, has_sink);
+      output, attn_logits, sinks, batches, num_heads, head_size_v, num_kv_splits, l_stride1, l_stride2, has_sink, sink_stride);
 }  // GQA/MQA
 
 }  // anonymous namespace
@@ -1812,7 +1816,7 @@ void decode_attention_grouped_kernel_impl(
 // req_pool_indices: [num_seqs] int64
 // seq_lens:         [num_seqs] int64
 // encoder_lens:     [num_seqs] int64 or None
-// sinks:            [num_heads] or None
+// sinks:            [num_heads], [num_queries, num_heads], or None
 void decode_attention_cpu(
     at::Tensor& query,
     at::Tensor& k_buffer,
@@ -1910,9 +1914,18 @@ void decode_attention_cpu(
   float v_buf_scale_float = static_cast<float>(v_buf_scale);
   const float* k_buf_scale_ptr = kv_dtype == at::ScalarType::Float8_e4m3fn ? &k_buf_scale_float : nullptr;
   const float* v_buf_scale_ptr = kv_dtype == at::ScalarType::Float8_e4m3fn ? &v_buf_scale_float : nullptr;
-  at::Tensor sinks_tensor = has_sink ? sinks.value() : at::empty({num_heads}, query.options());
-  CHECK_DIM(1, sinks_tensor);
-  CHECK_EQ(sinks_tensor.size(0), num_heads);
+  at::Tensor sinks_tensor = has_sink ? sinks.value() : at::empty({num_heads}, query.options().dtype(at::kFloat));
+  TORCH_CHECK(sinks_tensor.device().is_cpu(), "decode: sinks must be on CPU");
+  TORCH_CHECK(
+      (sinks_tensor.dim() == 1 && sinks_tensor.size(0) == num_heads) ||
+          (sinks_tensor.dim() == 2 && sinks_tensor.size(0) == num_seqs && sinks_tensor.size(1) == num_heads),
+      "decode: sinks must have shape [num_heads] or [num_queries, num_heads]");
+  TORCH_CHECK(
+      sinks_tensor.scalar_type() == at::kFloat || sinks_tensor.scalar_type() == at::kHalf ||
+          sinks_tensor.scalar_type() == at::kBFloat16,
+      "decode: sinks must have dtype float32, float16 or bfloat16");
+  const int64_t sink_stride = sinks_tensor.dim() == 2 ? num_heads : 0;
+  sinks_tensor = sinks_tensor.to(at::kFloat).contiguous();
   AT_DISPATCH_REDUCED_FLOATING_TYPES(query.scalar_type(), "decode_attention_kernel", [&] {
     AT_DISPATCH_INDEX_TYPES(index_dtype, "decode_attention_indices", [&] {
       CPU_DISPATCH_PACKED_TYPES(k_buffer.scalar_type(), "decode_attention_packed_types", [&] {
@@ -1969,7 +1982,7 @@ void decode_attention_cpu(
               req_pool_indices.data_ptr<int64_t>(),
               seq_lens.data_ptr<int64_t>(),
               encoder_lens_t.data_ptr<int64_t>(),
-              sinks_tensor.data_ptr<scalar_t>(),
+              sinks_tensor.data_ptr<float>(),
               num_seqs,
               num_heads,
               head_size,
@@ -1989,7 +2002,8 @@ void decode_attention_cpu(
               sliding_window_size,
               is_cross_attn,
               has_encoder_lens,
-              has_sink);
+              has_sink,
+              sink_stride);
         } else if (is_mla) {
           // MLA
           TORCH_CHECK(key.has_value() && value.has_value(), "MLA requires key and value tensors");
@@ -2006,7 +2020,7 @@ void decode_attention_cpu(
               req_pool_indices.data_ptr<int64_t>(),
               seq_lens.data_ptr<int64_t>(),
               buffer.data_ptr<scalar_t>(),
-              sinks_tensor.data_ptr<scalar_t>(),
+              sinks_tensor.data_ptr<float>(),
               num_seqs,
               num_heads,
               head_size,
@@ -2024,7 +2038,8 @@ void decode_attention_cpu(
               max_context_len,
               max_total_num_tokens,
               size_per_thread,
-              has_sink);
+              has_sink,
+              sink_stride);
         } else {
           // GQA/MQA
           decode_attention_grouped_kernel_impl<scalar_t, packed_t, index_t, BLOCK_N>(
@@ -2039,7 +2054,7 @@ void decode_attention_cpu(
               req_pool_indices.data_ptr<int64_t>(),
               seq_lens.data_ptr<int64_t>(),
               encoder_lens_t.data_ptr<int64_t>(),
-              sinks_tensor.data_ptr<scalar_t>(),
+              sinks_tensor.data_ptr<float>(),
               num_seqs,
               num_heads,
               num_heads_kv,
@@ -2060,7 +2075,8 @@ void decode_attention_cpu(
               sliding_window_size,
               is_cross_attn,
               has_encoder_lens,
-              has_sink);
+              has_sink,
+              sink_stride);
         }
       });
     });

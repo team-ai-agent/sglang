@@ -45,8 +45,10 @@ from sglang.srt.layers.vocab_parallel_embedding import (
 from sglang.srt.model_executor.forward_batch_info import ForwardBatch
 from sglang.srt.model_loader.weight_utils import default_weight_loader
 from sglang.srt.runtime_context import get_parallel
+from sglang.srt.utils import is_cpu
 
 logger = logging.getLogger(__name__)
+_is_cpu = is_cpu()
 
 
 @triton.jit(do_not_specialize=["num_tokens"])
@@ -123,6 +125,28 @@ def _apply_learned_sink_kernel(
         values * factor[:, None],
         mask,
     )
+
+
+def _learned_sink_logits(query: torch.Tensor, sink_key: torch.Tensor, scale: float):
+    if query.ndim != 3 or sink_key.ndim != 2:
+        raise ValueError(
+            "Learned sink requires [tokens, heads, dim] queries and [kv_heads, dim] keys"
+        )
+    _, num_heads, head_dim = query.shape
+    if (
+        sink_key.shape[1] != head_dim
+        or not sink_key.shape[0]
+        or num_heads % sink_key.shape[0]
+    ):
+        raise ValueError("Learned sink key geometry does not match the query heads")
+    keys = sink_key.to(query.dtype).repeat_interleave(
+        num_heads // sink_key.shape[0], dim=0
+    )
+    products = query.float() * keys.float()
+    if head_dim == 128:
+        groups = products.reshape(*products.shape[:-1], head_dim // 4, 4)
+        products = ((groups[..., 0] + groups[..., 1]) + groups[..., 2]) + groups[..., 3]
+    return (products.sum(dim=-1) * scale).contiguous()
 
 
 def _apply_learned_sink(
@@ -419,8 +443,14 @@ class IQuestQ1Attention(nn.Module):
         if self.rotary_emb is not None:
             q, k = self.rotary_emb(positions, q, k)
         if self.enable_sink_attention:
-            attn_output, lse = self.attn(q, k, v, forward_batch, return_lse=True)
-            attn_output = self._apply_zero_value_sink(q, attn_output, lse)
+            if q.device.type == "cpu":
+                sinks = _learned_sink_logits(
+                    q.view(-1, self.num_heads, self.head_dim), self.sink_k, self.scaling
+                )
+                attn_output = self.attn(q, k, v, forward_batch, sinks=sinks)
+            else:
+                attn_output, lse = self.attn(q, k, v, forward_batch, return_lse=True)
+                attn_output = self._apply_zero_value_sink(q, attn_output, lse)
         else:
             attn_output = self.attn(q, k, v, forward_batch)
         output, _ = self.o_proj(attn_output)
@@ -759,17 +789,22 @@ class IQuestQ1ForCausalLM(nn.Module):
         self.model = IQuestQ1Model(
             config, quant_config=quant_config, prefix=add_prefix("model", prefix)
         )
+        self.logits_processor = LogitsProcessor(config, logit_scale=config.logit_scale)
         self.lm_head = (
             self.model.embed_tokens
             if config.tie_word_embeddings
             else ParallelLMHead(
                 config.vocab_size,
                 config.hidden_size,
+                params_dtype=(
+                    torch.float32
+                    if _is_cpu and self.logits_processor.use_fp32_lm_head
+                    else None
+                ),
                 quant_config=quant_config,
                 prefix=add_prefix("lm_head", prefix),
             )
         )
-        self.logits_processor = LogitsProcessor(config, logit_scale=config.logit_scale)
 
     def get_input_embeddings(self):
         return self.model.embed_tokens

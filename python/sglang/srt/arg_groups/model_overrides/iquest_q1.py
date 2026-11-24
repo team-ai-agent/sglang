@@ -11,17 +11,34 @@ from sglang.srt.runtime_context import attn_dp_enabled_of
 @_register_for("IQuestQ1ForCausalLM", "IQuestQ1MTP")
 def _iquest_q1_overrides(server_args: Any, hf_config: Any) -> dict:
     cfg = resolving_view(server_args)
+    cpu = cfg.device == "cpu"
+    backend = "intel_amx" if cpu else "fa3"
+    if cpu:
+        heads = hf_config.num_attention_heads
+        kv_heads = hf_config.num_key_value_heads
+        tp = cfg.tp_size
+        kv_aligned = kv_heads % tp == 0 if kv_heads >= tp else tp % kv_heads == 0
+        if heads % tp or not kv_aligned:
+            raise ValueError(
+                "IQuestQ1 CPU query heads must be divisible by TP size, and KV "
+                "heads must divide or be divisible by TP size "
+                f"(query={heads}, KV={kv_heads}, TP={tp})."
+            )
     requested = (
         cfg.attention_backend,
         cfg.prefill_attention_backend,
         cfg.decode_attention_backend,
     )
-    if any(backend not in (None, "fa3") for backend in requested):
+    if any(request not in (None, backend) for request in requested):
         raise ValueError(
-            "IQuestQ1 applies its attention sink from the softmax LSE and "
+            "IQuestQ1 requires Intel AMX query-dependent sinks on CPU."
+            if cpu
+            else "IQuestQ1 applies its attention sink from the softmax LSE and "
             "requires FA3 attention for both prefill and decode."
         )
     if cfg.speculative_algorithm is not None:
+        if cpu:
+            raise ValueError("IQuestQ1 CPU speculative decoding is not supported.")
         if cfg.speculative_algorithm.upper() not in ("EAGLE", "NEXTN"):
             raise ValueError("IQuest Q1 MTP requires serial EAGLE or NEXTN drafting.")
         if cfg.speculative_draft_attention_backend not in (None, "fa3"):
@@ -40,10 +57,10 @@ def _iquest_q1_overrides(server_args: Any, hf_config: Any) -> dict:
         raise ValueError("IQuest Q1 does not support pipeline parallelism.")
     overrides = {}
     if is_attention_backend_not_set(cfg):
-        overrides["attention_backend"] = "fa3"
+        overrides["attention_backend"] = backend
         return overrides
     if cfg.attention_backend is None and cfg.prefill_attention_backend is None:
-        overrides["prefill_attention_backend"] = "fa3"
+        overrides["prefill_attention_backend"] = backend
     if cfg.attention_backend is None and cfg.decode_attention_backend is None:
-        overrides["decode_attention_backend"] = "fa3"
+        overrides["decode_attention_backend"] = backend
     return overrides
