@@ -169,6 +169,7 @@ class Step3p5MoEMLP(nn.Module):
             config.moe_num_experts,
             bias=False,
             quant_config=None,
+            params_dtype=torch.float32 if self.need_fp32_gate else None,
             prefix=add_prefix("gate", prefix),
         )
 

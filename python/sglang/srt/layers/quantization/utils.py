@@ -96,14 +96,16 @@ def is_layer_skipped(
     ignored_layers: List[str],
     fused_mapping: Mapping[str, List[str]] = MappingProxyType({}),
 ) -> bool:
+    # Checkpoints can exclude the packed projection itself, not just its shards.
+    if any(_module_path_match(ignored, prefix) for ignored in ignored_layers):
+        return True
+
     # prefix: model.layers.0.self_attn.q_proj
     # proj_name: q_proj
     proj_name = prefix.split(".")[-1]
 
-    # Fused layers like gate_up_proj or qkv_proj will not be fused
-    # in the safetensors checkpoint. So, we convert the name
-    # from the fused version to unfused + check to make sure that
-    # each shard of the fused layer has the same scheme.
+    # Otherwise, check the unfused checkpoint names and require the same
+    # precision for every shard of a fused projection.
     effective_fused = (
         fused_mapping if proj_name in fused_mapping else _FALLBACK_FUSED_SHARDS
     )

@@ -24,6 +24,34 @@ def _qwen3_next_ignored_layers(layer_idx: int, name: str) -> list:
 
 
 class TestIsLayerSkipped(CustomTestCase):
+    def test_explicit_packed_projection_is_skipped(self):
+        for module in ("self_attn.qkv_proj", "mlp.gate_up_proj"):
+            prefix = f"model.layers.0.{module}"
+            for ignored in ([prefix], [prefix.removeprefix("model.")]):
+                for mapping in ({}, QWEN3_NEXT_FUSED_MAPPING):
+                    with self.subTest(module=module, ignored=ignored, mapping=mapping):
+                        self.assertTrue(is_layer_skipped(prefix, ignored, mapping))
+                        self.assertFalse(
+                            is_layer_skipped(
+                                prefix.replace("layers.0.", "layers.1."),
+                                ignored,
+                                mapping,
+                            )
+                        )
+
+    def test_custom_packed_projection_is_skipped(self):
+        prefix = "model.layers.0.mlp.w13"
+        self.assertTrue(is_layer_skipped(prefix, [prefix], {"w13": ["w1", "w3"]}))
+
+    def test_unfused_shards_must_have_consistent_precision(self):
+        for packed, shards in QWEN3_NEXT_FUSED_MAPPING.items():
+            prefix = f"model.layers.0.{packed}"
+            ignored = [f"model.layers.0.{shard}" for shard in shards]
+            with self.subTest(packed=packed):
+                self.assertTrue(is_layer_skipped(prefix, ignored))
+                with self.assertRaisesRegex(ValueError, "some but not all shards"):
+                    is_layer_skipped(prefix, ignored[:1])
+
     def test_qwen3_next_in_proj_ba_is_skipped(self):
         # Regression for #23467: in_proj_ba is a unified tensor in the FP8
         # checkpoint. modules_to_not_convert lists it explicitly, so it must
