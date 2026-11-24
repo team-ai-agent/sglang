@@ -1,4 +1,5 @@
 import unittest
+from contextlib import nullcontext
 from types import SimpleNamespace
 from unittest.mock import DEFAULT, patch
 
@@ -121,6 +122,124 @@ def _new_stage(video_dit, audio_dit, bridge):
 
 
 class TestMOVADenoisingLoop(unittest.TestCase):
+    def test_cpu_and_xpu_time_math_restore_bf16_parameters(self):
+        class TimeMLP(torch.nn.Module):
+            def __init__(self, projection=False):
+                super().__init__()
+                self.fc_in = torch.nn.Linear(
+                    4, 24 if projection else 4, dtype=torch.bfloat16
+                )
+                self.projection = projection
+
+            def forward(self, value):
+                result = self.fc_in(value)
+                return (result, None) if self.projection else result
+
+        def stop_after_time_math(_):
+            raise RuntimeError("time math completed")
+
+        for device_type in ("cpu", "xpu"):
+            with self.subTest(device_type=device_type):
+                modules = [TimeMLP(), TimeMLP(True), TimeMLP(), TimeMLP(True)]
+                original = [
+                    (p, p.data, p.clone()) for m in modules for p in m.parameters()
+                ]
+                visual = SimpleNamespace(
+                    time_embedding=modules[0],
+                    time_projection=modules[1],
+                    freq_dim=4,
+                    dim=4,
+                    text_embedding=stop_after_time_math,
+                )
+                stage = object.__new__(MOVADenoisingStage)
+                stage.audio_dit = SimpleNamespace(
+                    time_embedding=modules[2],
+                    time_projection=modules[3],
+                    freq_dim=4,
+                    dim=4,
+                )
+                with (
+                    patch.object(
+                        mova, "current_platform", SimpleNamespace(device_type=device_type)
+                    ),
+                    patch.object(
+                        mova,
+                        "sinusoidal_embedding_1d",
+                        return_value=torch.ones(1, 4),
+                    ),
+                    patch.object(
+                        mova.torch,
+                        "autocast",
+                        side_effect=AssertionError("unsupported FP32 autocast"),
+                    ),
+                    self.assertRaisesRegex(RuntimeError, "time math completed"),
+                ):
+                    stage.inference_single_step(
+                        visual,
+                        torch.zeros(1),
+                        torch.zeros(1),
+                        None,
+                        torch.zeros(1, 4),
+                        torch.ones(1),
+                        torch.ones(1),
+                        24.0,
+                    )
+                for parameter, storage, value in original:
+                    self.assertEqual(parameter.data_ptr(), storage.data_ptr())
+                    torch.testing.assert_close(parameter, value, rtol=0, atol=0)
+
+    def test_cpu_and_xpu_audio_decode_use_fp32_and_restore_bf16(self):
+        for device_type in ("cpu", "xpu"):
+            with self.subTest(device_type=device_type):
+                audio_vae = torch.nn.Linear(4, 2, dtype=torch.bfloat16)
+                audio_vae.decode = audio_vae.forward
+                audio_vae.sample_rate = 16000
+                original = [(p, p.data, p.clone()) for p in audio_vae.parameters()]
+                stage = object.__new__(mova.MOVADecodingStage)
+                stage.video_vae = SimpleNamespace(decode=lambda value: value)
+                stage.audio_vae = audio_vae
+                batch = SimpleNamespace(
+                    latents=torch.zeros(1, 3, 1, 1, 1),
+                    metrics=None,
+                    audio_latents=torch.ones(1, 4, dtype=torch.bfloat16),
+                )
+                server_args = SimpleNamespace(
+                    disable_autocast=True,
+                    pipeline_config=SimpleNamespace(
+                        vae_precision="bf16",
+                        vae_tiling=False,
+                        denormalize_video_latents=lambda value, _: value,
+                    ),
+                )
+                expected = torch.nn.functional.linear(
+                    batch.audio_latents.float(),
+                    audio_vae.weight.float(),
+                    audio_vae.bias.float(),
+                )
+                with (
+                    patch.object(
+                        mova, "current_platform", SimpleNamespace(device_type=device_type)
+                    ),
+                    patch.object(
+                        stage, "use_declared_component",
+                        side_effect=lambda **kw: nullcontext(kw["module"]),
+                    ),
+                    patch.object(
+                        mova, "precision_autocast_context", return_value=nullcontext()
+                    ),
+                    patch.object(
+                        mova.torch,
+                        "autocast",
+                        side_effect=AssertionError("unsupported FP32 autocast"),
+                    ),
+                ):
+                    result = stage.forward(batch, server_args)
+                self.assertEqual(result.audio.dtype, torch.float32)
+                torch.testing.assert_close(result.audio, expected, rtol=0, atol=0)
+                for parameter, storage, value in original:
+                    self.assertEqual(parameter.data_ptr(), storage.data_ptr())
+                    torch.testing.assert_close(parameter, value, rtol=0, atol=0)
+
     def _assert_stepped_by(self, batch, value):
         torch.testing.assert_close(
             batch.latents, torch.full_like(batch.latents, _STEPS * value)

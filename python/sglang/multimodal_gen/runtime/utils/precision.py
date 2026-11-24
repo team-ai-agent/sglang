@@ -228,7 +228,7 @@ def temporary_module_fp32_dtype(
     """Temporarily cast a module's floating parameters and buffers to fp32 for the scope.
 
     The module is restored to its exact original state on exit, including original dtypes and
-    values. This is intended for inference-only, short-lived CPU workarounds where fp32 math is
+    values. This is intended for inference-only, short-lived CPU/XPU workarounds where fp32 math is
     required but the module should not be left in a permanently altered state.
     """
     if not enabled:
