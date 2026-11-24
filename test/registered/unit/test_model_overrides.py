@@ -22,6 +22,7 @@ from sglang.srt.arg_groups import model_override_base as base_module
 from sglang.srt.arg_groups import overrides as overrides_module
 from sglang.srt.arg_groups.arg_utils import A, Arg, resolvable_fields
 from sglang.srt.arg_groups.model_override_base import register_model_override
+from sglang.srt.arg_groups.model_overrides import flint as flint_module
 from sglang.srt.arg_groups.model_overrides import gemma4 as gemma4_module
 from sglang.srt.arg_groups.model_overrides import minicpm as minicpm_module
 from sglang.srt.arg_groups.model_overrides import qwen3_5 as qwen3_5_module
@@ -64,6 +65,52 @@ class _FakeArgs:
     resolved_by_model: A[str, Arg(help="x", resolvable=True)] = "auto"
     also_resolved: A[Optional[int], Arg(help="y", resolvable=True)] = None
     metadata_but_not_overridable: A[bool, Arg(help="z")] = False
+
+
+class TestFlintCPUOverrides(CustomTestCase):
+    def config(self, attention_backend=None):
+        return SimpleNamespace(
+            attention_backend=attention_backend,
+            prefill_attention_backend=None,
+            decode_attention_backend=None,
+            moe_runner_backend="auto",
+            moe_a2a_backend="none",
+        )
+
+    def test_cpu_uses_sink_capable_attention_without_cuda_moe_or_norm(self):
+        for requested in (None, "intel_amx"):
+            with (
+                self.subTest(attention_backend=requested),
+                patch.object(flint_module, "is_cpu", return_value=True),
+                override_platform(has_amx=True, is_sm100=False, is_sm90=False),
+                patch.dict(os.environ, {}, clear=True),
+            ):
+                declared = flint_module._flint_overrides(self.config(requested), None)
+                self.assertEqual(
+                    declared,
+                    {"attention_backend": "intel_amx"} if requested is None else {},
+                )
+                self.assertNotIn("FLASHINFER_USE_CUDA_NORM", os.environ)
+
+    def test_gpu_defaults_and_backend_validation_are_unchanged(self):
+        for sm100, sm90, attention, moe in (
+            (True, False, "fa4", "flashinfer_trtllm_routed"),
+            (False, True, "fa3", "triton"),
+            (False, False, "triton", "triton"),
+        ):
+            with (
+                self.subTest(attention_backend=attention),
+                patch.object(flint_module, "is_cpu", return_value=False),
+                override_platform(is_sm100=sm100, is_sm90=sm90),
+                patch.dict(os.environ, {}, clear=True),
+            ):
+                self.assertEqual(
+                    flint_module._flint_overrides(self.config(), None),
+                    {"attention_backend": attention, "moe_runner_backend": moe},
+                )
+                self.assertEqual(os.environ["FLASHINFER_USE_CUDA_NORM"], "1")
+                with self.assertRaisesRegex(ValueError, "attention sinks"):
+                    flint_module._flint_overrides(self.config("intel_amx"), None)
 
 
 class TestBoundaryParallelismResolution(CustomTestCase):

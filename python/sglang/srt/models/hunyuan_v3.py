@@ -43,8 +43,8 @@ from sglang.srt.model_executor.forward_context import get_attn_backend
 from sglang.srt.model_executor.runner import get_is_capture_mode
 from sglang.srt.model_loader.weight_utils import default_weight_loader
 from sglang.srt.models.utils import apply_qk_norm
-from sglang.srt.runtime_context import get_parallel, get_stream
-from sglang.srt.utils import is_cuda
+from sglang.srt.runtime_context import get_exec, get_parallel, get_stream
+from sglang.srt.utils import is_cpu, is_cuda
 
 
 class HYV3FeedForward(nn.Module):
@@ -513,9 +513,19 @@ class HYV3ForCausalLM(nn.Module):
         self.quant_config = quant_config
 
         self.model = HYV3Model(config, quant_config, prefix=f"{prefix}.model")
+        # FP32 logits read a logical matrix, not AMX-packed BF16 weights.
         self.lm_head = ParallelLMHead(
             config.vocab_size,
             config.hidden_size,
+            params_dtype=(
+                torch.float32
+                if is_cpu()
+                and (
+                    get_exec().features.enable_fp32_lm_head
+                    or getattr(config, "enable_lm_head_fp32", False)
+                )
+                else None
+            ),
             quant_config=quant_config,
             prefix=f"{prefix}.lm_head",
         )

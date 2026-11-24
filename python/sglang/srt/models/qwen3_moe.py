@@ -1039,9 +1039,19 @@ class Qwen3MoeForCausalLM(nn.Module):
         self.model = self.model_cls(
             config, quant_config, prefix=add_prefix("model", prefix)
         )
+        # FP32 logits read a logical matrix, not AMX-packed BF16 weights.
         self.lm_head = ParallelLMHead(
             config.vocab_size,
             config.hidden_size,
+            params_dtype=(
+                torch.float32
+                if _is_cpu
+                and (
+                    get_exec().features.enable_fp32_lm_head
+                    or getattr(config, "enable_lm_head_fp32", False)
+                )
+                else None
+            ),
             quant_config=quant_config,
             prefix=add_prefix("lm_head", prefix),
             use_attn_tp_group=get_parallel().enable_dp_lm_head,

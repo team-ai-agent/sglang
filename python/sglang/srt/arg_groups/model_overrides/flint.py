@@ -7,6 +7,7 @@ from sglang.srt.arg_groups.model_override_base import (
     resolving_view,
 )
 from sglang.srt.runtime_context import get_platform
+from sglang.srt.utils.device import is_cpu
 
 _SUPPORTED_MOE_RUNNERS = ("auto", "triton", "flashinfer_trtllm_routed")
 _SINK_ATTENTION_BACKENDS = ("fa3", "fa4", "triton", "trtllm_mha")
@@ -27,13 +28,15 @@ def _flint_overrides(server_args: Any, hf_config: Any) -> dict:
         cfg.prefill_attention_backend,
         cfg.decode_attention_backend,
     )
-    if any(b not in (None, *_SINK_ATTENTION_BACKENDS) for b in requested):
-        raise ValueError(
-            f"Flint needs attention sinks; use one of {_SINK_ATTENTION_BACKENDS}."
-        )
+    sink_backends = _SINK_ATTENTION_BACKENDS + (
+        ("intel_amx",) if is_cpu() and get_platform().has_amx else ()
+    )
+    if any(b not in (None, *sink_backends) for b in requested):
+        raise ValueError(f"Flint needs attention sinks; use one of {sink_backends}.")
     if "trtllm_mha" in requested and len(set(requested) - {None}) > 1:
         raise ValueError("Flint cannot mix trtllm_mha with other attention backends.")
-    os.environ.setdefault("FLASHINFER_USE_CUDA_NORM", "1")
+    if not is_cpu():
+        os.environ.setdefault("FLASHINFER_USE_CUDA_NORM", "1")
 
     overrides = {}
     default_backend = (
@@ -46,7 +49,7 @@ def _flint_overrides(server_args: Any, hf_config: Any) -> dict:
             overrides["prefill_attention_backend"] = default_backend
         if cfg.decode_attention_backend is None:
             overrides["decode_attention_backend"] = default_backend
-    if cfg.moe_runner_backend == "auto":
+    if cfg.moe_runner_backend == "auto" and not is_cpu():
         overrides["moe_runner_backend"] = (
             "flashinfer_trtllm_routed" if get_platform().is_sm100 else "triton"
         )
@@ -54,6 +57,8 @@ def _flint_overrides(server_args: Any, hf_config: Any) -> dict:
 
 
 def _default_attention_backend() -> str:
+    if is_cpu() and get_platform().has_amx:
+        return "intel_amx"
     if get_platform().is_sm100:
         return "fa4"
     if get_platform().is_sm90:
