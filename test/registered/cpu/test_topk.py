@@ -80,12 +80,15 @@ class TestBiasedGroupedTopK(CustomTestCase):
         gating_dtype,
         bias_dtype,
         routed_scaling_factor,
+        gating_scale=None,
     ):
         torch.manual_seed(1024)
 
         # expand gating_output by M, otherwise bfloat16 fall into same value aftering truncating
         hidden_states = torch.randn(M, 100, dtype=torch.bfloat16)
-        gating_output = torch.randn(M, E, dtype=gating_dtype) * 2 * M
+        gating_output = torch.randn(M, E, dtype=gating_dtype) * (
+            2 * M if gating_scale is None else gating_scale
+        )
         correction_bias = torch.randn(E, dtype=bias_dtype)
 
         ref_topk_weights, ref_topk_ids = native_biased_grouped_topk(
@@ -139,6 +142,36 @@ class TestBiasedGroupedTopK(CustomTestCase):
                                 bias_dtype,
                                 routed_scaling_factor,
                             )
+
+    def test_160_expert_biased_grouped_topk(self):
+        for (
+            rows,
+            groups,
+            renormalize,
+            gating_dtype,
+            bias_dtype,
+            scale,
+        ) in itertools.product(
+            (1, 34),
+            (1, 8),
+            (False, True),
+            (torch.float32, torch.bfloat16),
+            (torch.float32, torch.bfloat16),
+            (None, 2.5),
+        ):
+            # Saturated sigmoid plus BF16 bias can create ambiguous group-score ties.
+            self._run_single_test(
+                rows,
+                160,
+                groups,
+                8,
+                min(groups, 2),
+                renormalize,
+                gating_dtype,
+                bias_dtype,
+                scale,
+                gating_scale=1.0,
+            )
 
 
 class TestBiasedTopK(CustomTestCase):
@@ -208,6 +241,8 @@ class TestTopK(CustomTestCase):
             self._run_single_test(123, 64, 6, renormalize, torch.bfloat16)
             self._run_single_test(123, 256, 4, renormalize, torch.bfloat16)
             self._run_single_test(123, 160, 6, renormalize, torch.bfloat16)
+            self._run_single_test(123, 192, 6, renormalize, torch.bfloat16)
+            self._run_single_test(123, 288, 8, renormalize, torch.bfloat16)
             self._run_single_test(123, 2560, 8, renormalize, torch.bfloat16)
 
     def test_topk_softmax_mixed_input_dtypes(self):
@@ -341,7 +376,7 @@ class TestCustomTopK(CustomTestCase):
         """Biased scores must select experts while returned weights stay unbiased."""
         for num_tokens, num_experts, topk, with_bias, renormalize in itertools.product(
             [1, 17, 128],
-            [16, 128, 256, 384, 512],
+            [16, 128, 192, 256, 288, 384, 512],
             [1, 2, 4, 8],
             [False, True],
             [False, True],
@@ -385,30 +420,37 @@ class TestCustomTopK(CustomTestCase):
             )
 
     def test_topk_sigmoid_mixed_input_dtypes(self):
-        torch.manual_seed(0)
-        hidden_states = torch.randn((17, 16), dtype=torch.bfloat16)
-        gating_output = torch.randn((17, 256), dtype=torch.float32)
+        for num_experts in [192, 256, 288]:
+            with (
+                self.subTest(num_experts=num_experts),
+                torch.random.fork_rng(devices=[]),
+            ):
+                torch.manual_seed(0)
+                hidden_states = torch.randn((17, 16), dtype=torch.bfloat16)
+                gating_output = torch.randn((17, num_experts), dtype=torch.float32)
 
-        topk_weights, topk_ids = torch.ops.sgl_kernel.topk_sigmoid_cpu(
-            hidden_states=hidden_states,
-            gating_output=gating_output,
-            topk=8,
-            renormalize=True,
-            correction_bias=None,
-        )
+                topk_weights, topk_ids = torch.ops.sgl_kernel.topk_sigmoid_cpu(
+                    hidden_states=hidden_states,
+                    gating_output=gating_output,
+                    topk=8,
+                    renormalize=True,
+                    correction_bias=None,
+                )
 
-        scores = torch.sigmoid(gating_output)
-        expected_ids = torch.topk(scores, k=8, dim=-1).indices
-        expected_weights = scores.gather(1, topk_ids.to(torch.int64))
-        expected_weights /= expected_weights.sum(dim=-1, keepdim=True)
+                scores = torch.sigmoid(gating_output)
+                expected_ids = torch.topk(scores, k=8, dim=-1).indices
+                expected_weights = scores.gather(1, topk_ids.to(torch.int64))
+                expected_weights /= expected_weights.sum(dim=-1, keepdim=True)
 
-        self.assertTrue(
-            torch.equal(
-                torch.sort(topk_ids.to(torch.int64), dim=-1).values,
-                torch.sort(expected_ids, dim=-1).values,
-            )
-        )
-        torch.testing.assert_close(topk_weights, expected_weights, atol=1e-5, rtol=1e-5)
+                self.assertTrue(
+                    torch.equal(
+                        torch.sort(topk_ids.to(torch.int64), dim=-1).values,
+                        torch.sort(expected_ids, dim=-1).values,
+                    )
+                )
+                torch.testing.assert_close(
+                    topk_weights, expected_weights, atol=1e-5, rtol=1e-5
+                )
 
     def test_fused_moe_router_cpu(self):
         for (
