@@ -438,10 +438,46 @@ class FusedRMSNormGated(nn.Module):
         residual: torch.Tensor | None = None,
         prenorm: bool = False,
         residual_in_fp32: bool = False,
-    ) -> torch.Tensor:
+    ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
         if _use_cpu:
+            if self.activation == "sigmoid":
+                assert g.shape[-1] == x.shape[-1] and g.numel() == x.numel(), (
+                    "Gate shape must match input features and element count"
+                )
+                if (
+                    residual is None
+                    and self.bias is None
+                    and not prenorm
+                    and 2 <= x.ndim <= 4
+                    and hasattr(torch.ops.sgl_kernel, "fused_rmsnorm_sigmoid_gated_cpu")
+                ):
+                    return torch.ops.sgl_kernel.fused_rmsnorm_sigmoid_gated_cpu(
+                        x, self.weight, g, self.eps
+                    )
+                values = x.float()
+                if residual is not None:
+                    assert residual.shape == x.shape, "Residual shape must match input"
+                    values = values + residual.float()
+                output = values * torch.rsqrt(
+                    values.square().mean(dim=-1, keepdim=True) + self.eps
+                )
+                if self.weight is not None:
+                    output = output * self.weight.float()
+                if self.bias is not None:
+                    output = output + self.bias.float()
+                output = (output * g.float().reshape_as(x).sigmoid()).to(x.dtype)
+                if prenorm:
+                    residual_dtype = (
+                        residual.dtype
+                        if residual is not None
+                        else torch.float32
+                        if residual_in_fp32
+                        else x.dtype
+                    )
+                    return output, values.to(residual_dtype)
+                return output
             assert self.activation == "silu", (
-                "CPU rmsnorm_gated currently only supports activation silu"
+                "CPU rmsnorm_gated supports activations silu and sigmoid"
             )
             return torch.ops.sgl_kernel.fused_rmsnorm_gated_cpu(
                 x, self.weight, g, self.eps

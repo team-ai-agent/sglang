@@ -208,3 +208,117 @@ void fused_sigmoid_mul_cpu(at::Tensor& input, const at::Tensor& gate) {
         g_strideH);
   });
 }
+
+namespace {
+
+template <typename scalar_t>
+void silu_and_mul_clamp_kernel_impl(
+    scalar_t* __restrict__ out_base,
+    const scalar_t* __restrict__ in_base,
+    int64_t num_tokens,
+    int64_t dim,
+    int64_t in_s0,
+    int64_t in_s1,
+    int64_t out_s0,
+    int64_t out_s1,
+    float limit_lo,
+    float limit_hi) {
+  if (in_s1 == 1 && out_s1 == 1) {
+    using bVec = at::vec::Vectorized<scalar_t>;
+    using bfVec = at::vec::Vectorized<at::BFloat16>;
+    using fVec = at::vec::Vectorized<float>;
+    constexpr int64_t kVecSize = bVec::size();
+    const fVec v_hi(limit_hi);
+    const fVec v_lo(limit_lo);
+    const fVec v_one(1.0f);
+
+    at::parallel_for(0, num_tokens, 0, [&](int64_t begin, int64_t end) {
+      for (int64_t i = begin; i < end; ++i) {
+        const scalar_t* __restrict__ g_ptr = in_base + i * in_s0;
+        const scalar_t* __restrict__ u_ptr = g_ptr + dim;
+        scalar_t* __restrict__ o_ptr = out_base + i * out_s0;
+
+        int64_t d = 0;
+#pragma GCC unroll 4
+        for (; d <= dim - kVecSize; d += kVecSize) {
+          auto [g0, g1] = load_float_vec2(g_ptr + d);
+          auto [u0, u1] = load_float_vec2(u_ptr + d);
+          if constexpr (!std::is_same_v<scalar_t, at::BFloat16>) {
+            bfVec gb = convert_from_float_ext<at::BFloat16>(g0, g1);
+            bfVec ub = convert_from_float_ext<at::BFloat16>(u0, u1);
+            std::tie(g0, g1) = at::vec::convert_to_float(gb);
+            std::tie(u0, u1) = at::vec::convert_to_float(ub);
+          }
+          g0 = at::vec::minimum(g0, v_hi);
+          g1 = at::vec::minimum(g1, v_hi);
+          u0 = at::vec::clamp(u0, v_lo, v_hi);
+          u1 = at::vec::clamp(u1, v_lo, v_hi);
+
+          fVec res0 = (g0 / (v_one + g0.neg().exp())) * u0;
+          fVec res1 = (g1 / (v_one + g1.neg().exp())) * u1;
+          convert_from_float_ext<scalar_t>(res0, res1).store(o_ptr + d);
+        }
+        for (; d < dim; ++d) {
+          float g = static_cast<float>(static_cast<at::BFloat16>(static_cast<float>(g_ptr[d])));
+          float u = static_cast<float>(static_cast<at::BFloat16>(static_cast<float>(u_ptr[d])));
+          g = std::min(g, limit_hi);
+          u = std::min(std::max(u, limit_lo), limit_hi);
+          o_ptr[d] = static_cast<scalar_t>((g / (1.0f + std::exp(-g))) * u);
+        }
+      }
+    });
+  } else {
+    at::parallel_for(0, num_tokens, 0, [&](int64_t begin, int64_t end) {
+      for (int64_t i = begin; i < end; ++i) {
+        const scalar_t* __restrict__ row_in = in_base + i * in_s0;
+        scalar_t* __restrict__ row_out = out_base + i * out_s0;
+        for (int64_t d = 0; d < dim; ++d) {
+          float g = static_cast<float>(static_cast<at::BFloat16>(static_cast<float>(row_in[d * in_s1])));
+          float u = static_cast<float>(static_cast<at::BFloat16>(static_cast<float>(row_in[(d + dim) * in_s1])));
+          g = std::min(g, limit_hi);
+          u = std::min(std::max(u, limit_lo), limit_hi);
+          row_out[d * out_s1] = static_cast<scalar_t>((g / (1.0f + std::exp(-g))) * u);
+        }
+      }
+    });
+  }
+}
+
+}  // anonymous namespace
+
+void silu_and_mul_clamp_cpu(const at::Tensor& input, at::Tensor& output, double swiglu_limit) {
+  TORCH_CHECK(input.device().is_cpu() && output.device().is_cpu(), "silu_and_mul_clamp_cpu expects CPU tensors");
+  CHECK_DIM(2, input);
+  CHECK_DIM(2, output);
+  const int64_t num_tokens = output.size(0);
+  const int64_t dim = output.size(1);
+  TORCH_CHECK(
+      input.size(0) == num_tokens && input.size(1) == 2 * dim,
+      "Input last dimension must be twice the output last dimension");
+  const auto st = input.scalar_type();
+  TORCH_CHECK(
+      (st == at::kHalf || st == at::kBFloat16) && output.scalar_type() == st,
+      "CPU clamped SwiGLU requires matching FP16/BF16 input and output");
+
+  if (num_tokens == 0 || dim == 0) {
+    return;
+  }
+
+  // Match CUDA SiluAndMulClampKernel: clamp occurs in BF16 precision before FP32 SiLU * up.
+  const float limit_hi = static_cast<float>(static_cast<at::BFloat16>(static_cast<float>(swiglu_limit)));
+  const float limit_lo = static_cast<float>(static_cast<at::BFloat16>(-static_cast<float>(swiglu_limit)));
+
+  AT_DISPATCH_REDUCED_FLOATING_TYPES(st, "silu_and_mul_clamp_cpu", [&] {
+    silu_and_mul_clamp_kernel_impl<scalar_t>(
+        output.data_ptr<scalar_t>(),
+        input.data_ptr<scalar_t>(),
+        num_tokens,
+        dim,
+        input.stride(0),
+        input.stride(1),
+        output.stride(0),
+        output.stride(1),
+        limit_lo,
+        limit_hi);
+  });
+}
