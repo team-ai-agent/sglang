@@ -1,6 +1,9 @@
 export const config = {
   modelName: "Ming-Image",
-  supportedHardware: ["h200"],
+  supportedHardware: ["h200", "arc_b"],
+  hardware: [
+    { id: "arc_b", label: "BMG", vram: "24GB", vendor: "intel" },
+  ],
   groupHardware: false,
   matchDims: [],
   overlayDims: [
@@ -103,12 +106,21 @@ export const config = {
     },
     resource: {
       limits: { nodes: { min: 1, max: 1 }, gpus_per_node: { min: 1, max: 2 } },
-      verifiedRecipes: [],
-      autoTopology: (s) => ({
-        tp_size: 1,
-        ulysses_degree: Number(s.gpus_per_node),
-        ring_degree: 1,
-      }),
+      verifiedRecipes: [
+        { id: "arc_b-tp2", hw: "arc_b", nodes: 1, gpus_per_node: 2, tp_size: 2, ulysses_degree: 1, ring_degree: 1, default: true },
+      ],
+      autoTopology: (s) =>
+        s.hw === "arc_b"
+          ? {
+              tp_size: Number(s.gpus_per_node),
+              ulysses_degree: 1,
+              ring_degree: 1,
+            }
+          : {
+              tp_size: 1,
+              ulysses_degree: Number(s.gpus_per_node),
+              ring_degree: 1,
+            },
       validateTopology: (s, topology) => {
         const errors = [];
         const { tp_size: tp, ulysses_degree: sp, ring_degree: ring } = topology;
@@ -142,14 +154,21 @@ export const config = {
       const errors = resource.validateTopology(s, topology);
       const world = Number(s.nodes) * Number(s.gpus_per_node);
       const verifiedServe =
-        s.hw === "h200" &&
-        world === 1 &&
-        s.placement === "resident" &&
-        s.attention === "platform";
+        (s.hw === "h200" &&
+          world === 1 &&
+          s.placement === "resident" &&
+          s.attention === "platform") ||
+        (s.hw === "arc_b" &&
+          world === 2 &&
+          topology.tp_size === 2 &&
+          s.mode === "text" &&
+          s.placement === "resident" &&
+          s.attention === "platform");
       const verifiedRequest =
         verifiedServe &&
-        s.resolution === "512" &&
-        (s.mode !== "layer" || Number(s.layers) === 2);
+        (s.hw === "arc_b"
+          ? s.resolution === "1024"
+          : s.resolution === "512" && (s.mode !== "layer" || Number(s.layers) === 2));
       const model =
         s.mode === "layer"
           ? "inclusionAI/Ming-Image-0.1-Design-Layer"

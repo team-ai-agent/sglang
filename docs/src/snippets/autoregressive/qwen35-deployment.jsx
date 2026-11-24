@@ -80,9 +80,10 @@ export const Qwen35Deployment = () => {
         const hasFp4 = values.model === '397b';
         const isXeon = values.hardware === 'xeon';
         const isArcB = values.hardware === 'arc_b';
+        const arcBFp8 = isArcB && ['35b', '27b'].includes(values.model);
         return [
           { id: 'bf16', label: 'BF16', default: !hasFp8 || isXeon || isArcB },
-          { id: 'fp8',  label: 'FP8',  default: hasFp8 && !isXeon && !isArcB, disabled: !hasFp8 || isArcB,
+          { id: 'fp8',  label: 'FP8',  default: hasFp8 && !isXeon && !isArcB, disabled: !hasFp8 || (isArcB && !arcBFp8),
             disabledReason: 'No FP8 variant available for this model' },
           { id: 'fp4',  label: 'FP4',  default: false,   disabled: !hasFp4 || isXeon || isArcB,
             disabledReason: isXeon ? 'FP4 is not supported on Xeon' : 'FP4 is only available for Qwen3.5-397B-A17B' }
@@ -198,7 +199,7 @@ export const Qwen35Deployment = () => {
       mi325x: { bf16: { tp: 1, mem: 0.8 }, fp8: { tp: 1, mem: 0.8 } },
       mi355x: { bf16: { tp: 1, mem: 0.8 }, fp8: { tp: 1, mem: 0.8 } },
       xeon:   { bf16: { tp: 3 }, fp8: { tp: 3 } },
-      arc_b:  { bf16: { tp: 4, mem: 0.8 } }
+      arc_b:  { bf16: { tp: 4, mem: 0.8 }, fp8: { tp: 2, mem: 0.8 } }
     },
     '27b': {
       h100:   { bf16: { tp: 1, mem: 0.8 }, fp8: { tp: 1, mem: 0.8 } },
@@ -210,7 +211,8 @@ export const Qwen35Deployment = () => {
       mi300x: { bf16: { tp: 1, mem: 0.8 }, fp8: { tp: 1, mem: 0.8 } },
       mi325x: { bf16: { tp: 1, mem: 0.8 }, fp8: { tp: 1, mem: 0.8 } },
       mi355x: { bf16: { tp: 1, mem: 0.8 }, fp8: { tp: 1, mem: 0.8 } },
-      xeon:   { bf16: { tp: 6 }, fp8: { tp: 6 } }
+      xeon:   { bf16: { tp: 6 }, fp8: { tp: 6 } },
+      arc_b:  { bf16: { tp: 4, mem: 0.8 }, fp8: { tp: 4, mem: 0.8 } }
     },
     '9b': {
       h100:   { bf16: { tp: 1, mem: 0.8 } },
@@ -313,12 +315,12 @@ export const Qwen35Deployment = () => {
 
   const handleRadioChange = (optionName, value) => {
     setValues(prev => {
-      if (prev.hardware === 'arc_b' && optionName === 'model' && !['35b', '9b', '4b'].includes(value)) {
+      if (prev.hardware === 'arc_b' && optionName === 'model' && !['35b', '27b', '9b', '4b'].includes(value)) {
         return prev;
       }
 
       const next = { ...prev, [optionName]: value };
-      if (optionName === 'hardware' && value === 'arc_b' && !['35b', '9b', '4b'].includes(next.model)) {
+      if (optionName === 'hardware' && value === 'arc_b' && !['35b', '27b', '9b', '4b'].includes(next.model)) {
         next.model = '35b';
       }
       return next;
@@ -677,7 +679,7 @@ export const Qwen35Deployment = () => {
                 const isArcBModelLocked =
                   values.hardware === 'arc_b' &&
                   option.name === 'model' &&
-                  !['35b', '9b', '4b'].includes(item.id);
+                  !['35b', '27b', '9b', '4b'].includes(item.id);
                 const isDisabled = !!item.disabled || isArcBModelLocked;
                 return (
                   <label

@@ -14,7 +14,11 @@ export const config = {
   // TTFT/TPOT were recorded as Mean (no percentile restated in the source runs).
   latencyPercentile: "Mean",
 
-  supportedHardware: ["h100", "h200", "b200"],
+  supportedHardware: ["h100", "h200", "b200", "arc_b"],
+  hardware: [
+    { id: "arc_b", label: "BMG", vram: "24GB", vendor: "intel" },
+  ],
+  runModes: (s) => s.hw === "arc_b" ? ["python"] : ["python", "docker"],
 
   variants: [
     { id: "8b-a1b",   label: "8B-A1B",        subtitle: "8.3B MoE · reasoning" },
@@ -146,10 +150,12 @@ sgl-eval run aime25 \\
   },
 
   playgroundFeatures: {
+    normalizeDeltas: (deltas, derived, base) => base.hw === "arc_b" ? {} : deltas,
     // TP override only: every variant fits on (and is verified at) TP=1; TP=2 is
     // exposed for experimentation on the larger checkpoints. No Parsers axis —
     // see the header note (parsers are variant-intrinsic and live in the cells).
     attention: {
+      showWhen: (base) => base.hw !== "arc_b",
       knobs: [
         { id: "tp", label: "TP", values: [null, 1, 2] },
       ],
@@ -515,6 +521,117 @@ sgl-eval run aime25 \\
         "--mm-attention-backend fa4",
         "--tool-call-parser lfm2",
         "--mem-fraction-static 0.8",
+        "--host {{HOST_IP}}",
+        "--port {{PORT}}",
+      ],
+    },
+
+    // ====================================================================
+    // Intel Arc Pro B-Series (BMG / arc_b) — TP=1 native XPU recipes
+    // ====================================================================
+    {
+      match: { hw: "arc_b", variant: "8b-a1b", quant: "bf16", strategy: "default", nodes: "single" },
+      verified: true,
+      env: [],
+      flags: [
+        "--trust-remote-code",
+        "--model-path {{MODEL_NAME}}",
+        "--device xpu",
+        "--attention-backend intel_xpu",
+        "--tp 1",
+        "--reasoning-parser qwen3",
+        "--tool-call-parser lfm2",
+        "--host {{HOST_IP}}",
+        "--port {{PORT}}",
+      ],
+    },
+    {
+      match: { hw: "arc_b", variant: "instruct", quant: "bf16", strategy: "default", nodes: "single" },
+      verified: true,
+      env: [],
+      flags: [
+        "--trust-remote-code",
+        "--model-path {{MODEL_NAME}}",
+        "--device xpu",
+        "--attention-backend intel_xpu",
+        "--tp 1",
+        "--tool-call-parser lfm2",
+        "--host {{HOST_IP}}",
+        "--port {{PORT}}",
+      ],
+    },
+    {
+      match: { hw: "arc_b", variant: "thinking", quant: "bf16", strategy: "default", nodes: "single" },
+      verified: true,
+      env: [],
+      flags: [
+        "--trust-remote-code",
+        "--model-path {{MODEL_NAME}}",
+        "--device xpu",
+        "--attention-backend intel_xpu",
+        "--tp 1",
+        "--reasoning-parser qwen3-thinking",
+        "--tool-call-parser lfm2",
+        "--host {{HOST_IP}}",
+        "--port {{PORT}}",
+      ],
+    },
+    {
+      match: { hw: "arc_b", variant: "350m", quant: "bf16", strategy: "default", nodes: "single" },
+      verified: true,
+      env: [],
+      flags: [
+        "--trust-remote-code",
+        "--model-path {{MODEL_NAME}}",
+        "--device xpu",
+        "--attention-backend intel_xpu",
+        "--tp 1",
+        "--tool-call-parser lfm2",
+        "--host {{HOST_IP}}",
+        "--port {{PORT}}",
+      ],
+    },
+    {
+      match: { hw: "arc_b", variant: "230m", quant: "bf16", strategy: "default", nodes: "single" },
+      verified: true,
+      env: [],
+      flags: [
+        "--trust-remote-code",
+        "--model-path {{MODEL_NAME}}",
+        "--device xpu",
+        "--attention-backend intel_xpu",
+        "--tp 1",
+        "--tool-call-parser lfm2",
+        "--host {{HOST_IP}}",
+        "--port {{PORT}}",
+      ],
+    },
+    {
+      match: { hw: "arc_b", variant: "jp", quant: "bf16", strategy: "default", nodes: "single" },
+      verified: true,
+      env: [],
+      flags: [
+        "--trust-remote-code",
+        "--model-path {{MODEL_NAME}}",
+        "--device xpu",
+        "--attention-backend intel_xpu",
+        "--tp 1",
+        "--tool-call-parser lfm2",
+        "--host {{HOST_IP}}",
+        "--port {{PORT}}",
+      ],
+    },
+    {
+      match: { hw: "arc_b", variant: "vl", quant: "bf16", strategy: "default", nodes: "single" },
+      verified: true,
+      env: [],
+      flags: [
+        "--trust-remote-code",
+        "--model-path {{MODEL_NAME}}",
+        "--device xpu",
+        "--attention-backend intel_xpu",
+        "--tp 1",
+        "--tool-call-parser lfm2",
         "--host {{HOST_IP}}",
         "--port {{PORT}}",
       ],

@@ -12,7 +12,8 @@ export const GPTOSSDeployment = () => {
         { id: 'mi300x', label: 'MI300X', default: false },
         { id: 'mi325x', label: 'MI325X', default: false },
         { id: 'mi355x', label: 'MI355X', default: false },
-        { id: 'xeon', label: 'XEON', default: false }
+        { id: 'xeon', label: 'XEON', default: false },
+        { id: 'arc_b', label: 'BMG', default: false }
       ]
     },
     modelsize: {
@@ -90,7 +91,15 @@ export const GPTOSSDeployment = () => {
   }, []);
 
   const handleRadioChange = (optionName, value) => {
-    setValues(prev => ({ ...prev, [optionName]: value }));
+    setValues(prev => {
+      const next = { ...prev, [optionName]: value };
+      if (optionName === 'hardware' && value === 'arc_b') {
+        next.modelsize = '20b';
+        next.quantization = 'bf16';
+        next.speculative = 'disabled';
+      }
+      return next;
+    });
   };
 
   // Generate command
@@ -119,7 +128,8 @@ export const GPTOSSDeployment = () => {
         mi300x: { tp: 1 },
         mi325x: { tp: 1 },
         mi355x: { tp: 1 },
-        xeon: { tp: 3 }
+        xeon: { tp: 3 },
+        arc_b: { tp: 2 }
       }
     };
 
@@ -167,6 +177,8 @@ export const GPTOSSDeployment = () => {
       cmd += ` \\
   --device cpu \\
   --disable-overlap-schedule`;
+    } else if (hardware === 'arc_b') {
+      cmd += ` \\\n  --device xpu \\\n  --attention-backend intel_xpu \\\n  --page-size 64`;
     }
 
     if (hwConfig.tp > 1) {
@@ -239,7 +251,12 @@ export const GPTOSSDeployment = () => {
             ) : (
               option.items.map(item => {
                 const isChecked = values[option.name] === item.id;
-                const isDisabled = Boolean(item.disabled);
+                const isArcBLocked =
+                  values.hardware === 'arc_b' &&
+                  ((option.name === 'modelsize' && item.id !== '20b') ||
+                    (option.name === 'quantization' && item.id !== 'bf16') ||
+                    (option.name === 'speculative' && item.id !== 'disabled'));
+                const isDisabled = Boolean(item.disabled || isArcBLocked);
                 return (
                   <label key={item.id} style={{ ...labelBaseStyle, ...(isChecked ? checkedStyle : {}), ...(isDisabled ? disabledStyle : {}) }}>
                     <input type="radio" name={option.name} value={item.id} checked={isChecked} disabled={isDisabled} onChange={() => !isDisabled && handleRadioChange(option.name, item.id)} style={{ display: 'none' }} />

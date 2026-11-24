@@ -11,7 +11,8 @@ export const Qwen3CoderNextDeployment = () => {
         { id: 'mi300x', label: 'MI300X', default: false },
         { id: 'mi325x', label: 'MI325X', default: false },
         { id: 'mi355x', label: 'MI355X', default: false },
-        { id: 'xeon', label: 'XEON', default: false }
+        { id: 'xeon', label: 'XEON', default: false },
+        { id: 'arc_b', label: 'BMG', default: false }
       ]
     },
     quantization: {
@@ -19,6 +20,10 @@ export const Qwen3CoderNextDeployment = () => {
       title: 'Quantization',
       items: [
         { id: 'bf16', label: 'BF16', default: true },
+        { id: 'fp8', label: 'FP8', default: false }
+      ],
+      getDynamicItems: (values) => [
+        { id: 'bf16', label: 'BF16', default: true, disabled: values.hardware === 'arc_b' },
         { id: 'fp8', label: 'FP8', default: false }
       ]
     },
@@ -34,7 +39,7 @@ export const Qwen3CoderNextDeployment = () => {
     mambaCache: {
       name: 'mambaCache',
       title: 'Mamba Radix Cache',
-      condition: (values) => values.hardware !== 'xeon',
+      condition: (values) => values.hardware !== 'xeon' && values.hardware !== 'arc_b',
       items: [
         { id: 'v1', label: 'V1', default: true },
         { id: 'v2', label: 'V2', default: false }
@@ -53,7 +58,8 @@ export const Qwen3CoderNextDeployment = () => {
       mi300x: { bf16: { tp: 2 }, fp8: { tp: 1 } },
       mi325x: { bf16: { tp: 2 }, fp8: { tp: 1 } },
       mi355x: { bf16: { tp: 2 }, fp8: { tp: 1 } },
-      xeon: { bf16: { tp: 3 }, fp8: { tp: 3 } }
+      xeon: { bf16: { tp: 3 }, fp8: { tp: 3 } },
+      arc_b: { fp8: { tp: 4 } }
     }
   };
 
@@ -77,6 +83,8 @@ export const Qwen3CoderNextDeployment = () => {
 
     if (hardware === 'xeon') {
       cmd += ` \\\n  --device cpu \\\n  --disable-overlap-schedule`;
+    } else if (hardware === 'arc_b') {
+      cmd += ` \\\n  --device xpu \\\n  --attention-backend intel_xpu \\\n  --linear-attn-backend intel_xpu \\\n  --page-size 1`;
     }
 
     // TP setting
@@ -166,7 +174,13 @@ export const Qwen3CoderNextDeployment = () => {
   }, []);
 
   const handleRadioChange = (optionName, value) => {
-    setValues((prev) => ({ ...prev, [optionName]: value }));
+    setValues((prev) => {
+      const next = { ...prev, [optionName]: value };
+      if (optionName === 'hardware' && value === 'arc_b') {
+        next.quantization = 'fp8';
+      }
+      return next;
+    });
   };
 
   const handleCheckboxChange = (optionName, itemId, isChecked) => {

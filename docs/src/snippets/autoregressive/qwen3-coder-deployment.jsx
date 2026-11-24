@@ -9,7 +9,8 @@ export const Qwen3CoderDeployment = () => {
         { id: 'mi355x', label: 'MI355X', default: false },
         { id: 'b200', label: 'B200', default: false },
         { id: 'gb200', label: 'GB200', default: false },
-        { id: 'xeon', label: 'Xeon', default: false }
+        { id: 'xeon', label: 'Xeon', default: false },
+        { id: 'arc_b', label: 'BMG', default: false }
       ]
     },
     modelSize: {
@@ -18,6 +19,10 @@ export const Qwen3CoderDeployment = () => {
       items: [
         { id: '480b', label: '480B', subtitle: 'MOE', default: true },
         { id: '30b', label: '30B', subtitle: 'MOE', default: false }
+      ],
+      getDynamicItems: (values) => [
+        { id: '480b', label: '480B', subtitle: 'MOE', default: true, disabled: values.hardware === 'arc_b' },
+        { id: '30b', label: '30B', subtitle: 'MOE', default: false }
       ]
     },
     quantization: {
@@ -25,10 +30,11 @@ export const Qwen3CoderDeployment = () => {
       title: 'Quantization',
       getDynamicItems: (values) => {
         const isXeon = values.hardware === 'xeon';
+        const isArcB = values.hardware === 'arc_b';
         return [
-          { id: 'bf16', label: 'BF16', default: true },
-          { id: 'fp8', label: 'FP8', default: false, disabled: false, disabledReason: '' },
-          { id: 'nvfp4', label: 'NVFP4', default: false, disabled: isXeon, disabledReason: isXeon ? 'FP4 is not supported on Xeon' : '' }
+          { id: 'bf16', label: 'BF16', default: !isArcB, disabled: isArcB },
+          { id: 'fp8', label: 'FP8', default: isArcB, disabled: false, disabledReason: '' },
+          { id: 'nvfp4', label: 'NVFP4', default: false, disabled: isXeon || isArcB, disabledReason: isXeon ? 'FP4 is not supported on Xeon' : '' }
         ];
       }
     },
@@ -58,7 +64,8 @@ export const Qwen3CoderDeployment = () => {
       mi300x: { tp: 1 },
       mi325x: { tp: 1 },
       mi355x: { tp: 1 },
-      xeon: { tp: 3 }
+      xeon: { tp: 3 },
+      arc_b: { tp: 2 }
     }
   };
 
@@ -67,6 +74,7 @@ export const Qwen3CoderDeployment = () => {
 
     const isNvidia = hardware === 'b200' || hardware === 'gb200';
     const isXeon = hardware === 'xeon';
+    const isArcB = hardware === 'arc_b';
 
     const modelConfig = modelConfigs[modelSize];
     const hwConfig = modelConfig[hardware];
@@ -95,7 +103,7 @@ export const Qwen3CoderDeployment = () => {
     }
 
     let cmd = '';
-    if (!isNvidia && !isXeon) {
+    if (!isNvidia && !isXeon && !isArcB) {
       cmd += 'SGLANG_USE_AITER=0 ';
     }
     cmd += 'python -m sglang.launch_server \\\n';
@@ -103,6 +111,8 @@ export const Qwen3CoderDeployment = () => {
 
     if (isXeon) {
       cmd += ` \\\n  --device cpu \\\n  --disable-overlap-schedule`;
+    } else if (isArcB) {
+      cmd += ` \\\n  --device xpu \\\n  --attention-backend intel_xpu \\\n  --page-size 64`;
     }
 
     // TP setting
@@ -138,7 +148,7 @@ export const Qwen3CoderDeployment = () => {
     });
 
     // AMD-specific flags
-    if (!isNvidia && !isXeon) {
+    if (!isNvidia && !isXeon && !isArcB) {
       // Context length verified on MI300X/MI325X/MI355X
       cmd += ` \\\n  --context-length 8192`;
 
@@ -212,7 +222,14 @@ export const Qwen3CoderDeployment = () => {
   }, []);
 
   const handleRadioChange = (optionName, value) => {
-    setValues((prev) => ({ ...prev, [optionName]: value }));
+    setValues((prev) => {
+      const next = { ...prev, [optionName]: value };
+      if (optionName === 'hardware' && value === 'arc_b') {
+        next.modelSize = '30b';
+        next.quantization = 'fp8';
+      }
+      return next;
+    });
   };
 
   const handleCheckboxChange = (optionName, itemId, isChecked) => {

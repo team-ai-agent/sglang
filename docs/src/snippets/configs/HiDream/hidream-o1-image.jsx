@@ -1,6 +1,9 @@
 export const config = {
   modelName: "HiDream-O1-Image",
-  supportedHardware: ["h200"],
+  supportedHardware: ["h200", "arc_b"],
+  hardware: [
+    { id: "arc_b", label: "BMG", vram: "24GB", vendor: "intel" },
+  ],
   groupHardware: false,
   matchDims: [],
   overlayDims: [
@@ -31,6 +34,7 @@ export const config = {
       verifiedRecipes: [
         { id: "h200-tp1", hw: "h200", nodes: 1, gpus_per_node: 1, tp_size: 1, ulysses_degree: 1, ring_degree: 1, default: true },
         { id: "h200-tp2", hw: "h200", nodes: 1, gpus_per_node: 2, tp_size: 2, ulysses_degree: 1, ring_degree: 1 },
+        { id: "arc_b-tp4", hw: "arc_b", nodes: 1, gpus_per_node: 4, tp_size: 4, ulysses_degree: 1, ring_degree: 1, default: true },
       ],
       autoTopology: (s) => ({ tp_size: Number(s.gpus_per_node), ulysses_degree: 1, ring_degree: 1 }),
       validateTopology: (s, topology) => {

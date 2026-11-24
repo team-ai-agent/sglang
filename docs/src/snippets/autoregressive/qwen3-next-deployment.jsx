@@ -11,7 +11,8 @@ export const Qwen3NextDeployment = () => {
         { id: 'mi300x', label: 'MI300X', default: false },
         { id: 'mi325x', label: 'MI325X', default: false },
         { id: 'mi355x', label: 'MI355X', default: false },
-        { id: 'xeon', label: 'Xeon', default: false }
+        { id: 'xeon', label: 'Xeon', default: false },
+        { id: 'arc_b', label: 'BMG', default: false }
       ]
     },
     modelsize: {
@@ -27,6 +28,10 @@ export const Qwen3NextDeployment = () => {
       items: [
         { id: 'bf16', label: 'BF16', subtitle: 'Full Weights', default: true },
         { id: 'fp8', label: 'FP8', subtitle: 'High Throughput', default: false }
+      ],
+      getDynamicItems: (values) => [
+        { id: 'bf16', label: 'BF16', subtitle: 'Full Weights', default: true, disabled: values.hardware === 'arc_b' },
+        { id: 'fp8', label: 'FP8', subtitle: 'High Throughput', default: false }
       ]
     },
     thinking: {
@@ -35,6 +40,10 @@ export const Qwen3NextDeployment = () => {
       items: [
         { id: 'instruct', label: 'Instruct', subtitle: 'General Purpose', default: true },
         { id: 'thinking', label: 'Thinking', subtitle: 'Reasoning / CoT', default: false }
+      ],
+      getDynamicItems: (values) => [
+        { id: 'instruct', label: 'Instruct', subtitle: 'General Purpose', default: true },
+        { id: 'thinking', label: 'Thinking', subtitle: 'Reasoning / CoT', default: false, disabled: values.hardware === 'arc_b' }
       ],
       commandRule: (value) => value === 'thinking' ? '--reasoning-parser qwen3' : null
     },
@@ -50,6 +59,7 @@ export const Qwen3NextDeployment = () => {
     speculative: {
       name: 'speculative',
       title: 'Speculative Decoding',
+      condition: (values) => values.hardware !== 'arc_b',
       items: [
         { id: 'disabled', label: 'Disabled', default: true },
         { id: 'enabled', label: 'Enabled', default: false }
@@ -61,7 +71,7 @@ export const Qwen3NextDeployment = () => {
     mambaCache: {
       name: 'mambaCache',
       title: 'Mamba Radix Cache',
-      condition: (values) => values.hardware !== 'xeon',
+      condition: (values) => values.hardware !== 'xeon' && values.hardware !== 'arc_b',
       items: [
         { id: 'v1', label: 'V1', default: true },
         { id: 'v2', label: 'V2', default: false }
@@ -81,7 +91,8 @@ export const Qwen3NextDeployment = () => {
       mi300x: { tp: 2, ep: 0, bf16: true, fp8: true },
       mi325x: { tp: 2, ep: 0, bf16: true, fp8: true },
       mi355x: { tp: 2, ep: 0, bf16: true, fp8: true },
-      xeon: { tp: 3, ep: 0, bf16: true, fp8: true }
+      xeon: { tp: 3, ep: 0, bf16: true, fp8: true },
+      arc_b: { tp: 4, ep: 0, bf16: false, fp8: true }
     }
   };
 
@@ -108,6 +119,8 @@ export const Qwen3NextDeployment = () => {
 
     if (hardware === 'xeon') {
       cmd += ` \\\n  --device cpu \\\n  --disable-overlap-schedule`;
+    } else if (hardware === 'arc_b') {
+      cmd += ` \\\n  --device xpu \\\n  --attention-backend intel_xpu \\\n  --linear-attn-backend intel_xpu`;
     }
 
     if (hwConfig.tp > 1) {
@@ -205,7 +218,15 @@ export const Qwen3NextDeployment = () => {
   }, []);
 
   const handleRadioChange = (optionName, value) => {
-    setValues((prev) => ({ ...prev, [optionName]: value }));
+    setValues((prev) => {
+      const next = { ...prev, [optionName]: value };
+      if (optionName === 'hardware' && value === 'arc_b') {
+        next.quantization = 'fp8';
+        next.thinking = 'instruct';
+        next.speculative = 'disabled';
+      }
+      return next;
+    });
   };
 
   const handleCheckboxChange = (optionName, itemId, isChecked) => {

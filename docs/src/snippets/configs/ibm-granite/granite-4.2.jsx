@@ -3,7 +3,11 @@ export const config = {
 
   latencyPercentile: "P50",
 
-  supportedHardware: ["h200", "b200"],
+  supportedHardware: ["h200", "b200", "arc_b"],
+  hardware: [
+    { id: "arc_b", label: "BMG", vram: "24GB", vendor: "intel" },
+  ],
+  runModes: (base) => base.hw === "arc_b" ? ["python"] : ["python", "docker"],
 
   variants: [
     { id: "3b", label: "3B", subtitle: "Dense" },
@@ -63,7 +67,9 @@ export const config = {
   },
 
   playgroundFeatures: {
+    normalizeDeltas: (deltas, derived, base) => base.hw === "arc_b" ? {} : deltas,
     attention: {
+      showWhen: (base) => base.hw !== "arc_b",
       knobs: [
         { id: "tp", label: "TP", values: [null, 1, 2, 4, 8] },
       ],
@@ -75,6 +81,7 @@ export const config = {
       ],
     },
     pdDisagg: {
+      showWhen: (base) => base.hw !== "arc_b",
       modes: [
         { id: "off", label: "Off" },
         { id: "prefill", label: "Prefill role" },
@@ -87,6 +94,7 @@ export const config = {
       ibDevices: [{ id: "auto", label: "Auto" }, "mlx5_0", "mlx5_7"],
     },
     hicache: {
+      showWhen: (base) => base.hw !== "arc_b",
       backends: [
         { id: null, label: "Auto" },
         { id: "file", label: "File" },
@@ -180,6 +188,38 @@ export const config = {
       env: [],
       flags: [
         "--model-path {{MODEL_NAME}}",
+        "--tp 1",
+        "--mem-fraction-static 0.8",
+        "--reasoning-parser auto",
+        "--tool-call-parser auto",
+        "--host {{HOST_IP}}",
+        "--port {{PORT}}",
+      ],
+    },
+    {
+      match: { hw: "arc_b", variant: "3b", quant: "bf16", strategy: "balanced", nodes: "single" },
+      verified: true,
+      env: [],
+      flags: [
+        "--model-path {{MODEL_NAME}}",
+        "--device xpu",
+        "--attention-backend intel_xpu",
+        "--tp 1",
+        "--mem-fraction-static 0.8",
+        "--reasoning-parser auto",
+        "--tool-call-parser auto",
+        "--host {{HOST_IP}}",
+        "--port {{PORT}}",
+      ],
+    },
+    {
+      match: { hw: "arc_b", variant: "8b", quant: "bf16", strategy: "balanced", nodes: "single" },
+      verified: true,
+      env: [],
+      flags: [
+        "--model-path {{MODEL_NAME}}",
+        "--device xpu",
+        "--attention-backend intel_xpu",
         "--tp 1",
         "--mem-fraction-static 0.8",
         "--reasoning-parser auto",
