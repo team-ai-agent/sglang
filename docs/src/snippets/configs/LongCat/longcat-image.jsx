@@ -10,6 +10,11 @@ export const config = (() => {
     const env = [];
     const warnings = [];
     const errors = [];
+    if (s.hw === "arc_b") {
+      gpus = 4;
+      t = { tp_size: 4, ulysses_degree: 1, ring_degree: 1 };
+      flags.splice(flags.length - 1, 0, "--num-gpus 4", "--tp-size 4");
+    }
     return { flags, gpus, topology: t, env, warnings, errors };
   };
   const defaults = {
@@ -24,8 +29,11 @@ export const config = (() => {
   };
   const config = {
     modelName: "LongCat-Image",
-    supportedHardware: ["cuda"],
-    hardware: [{ id: "cuda", label: "NVIDIA CUDA", vram: "", vendor: "nvidia" }],
+    supportedHardware: ["cuda", "arc_b"],
+    hardware: [
+      { id: "cuda", label: "NVIDIA CUDA", vram: "", vendor: "nvidia" },
+      { id: "arc_b", label: "BMG", vram: "24GB", vendor: "intel" },
+    ],
     groupHardware: false,
     matchDims: [],
     overlayDims: [
@@ -43,8 +51,8 @@ export const config = (() => {
     commandBuilder: {
       defaultSelection: defaults,
       resource: {
-        limits: { nodes: { min: 1, max: 1 }, gpus_per_node: { min: 1, max: 1 } },
-        verifiedRecipes: ["cuda"].map((hw) => {
+        limits: { nodes: { min: 1, max: 1 }, gpus_per_node: { min: 1, max: 4 } },
+        verifiedRecipes: ["cuda", "arc_b"].map((hw) => {
           const s = { ...defaults, hw };
           const p = plan(s);
           return {
@@ -63,7 +71,7 @@ export const config = (() => {
           if (!config.supportedHardware.includes(s.hw)) errors.push("Choose a listed hardware platform.");
           if (Number(s.nodes) !== 1) errors.push("This recipe covers one node.");
           const count = Number(s.gpus_per_node);
-          if (!Number.isInteger(count) || count < 1 || count > 1)
+          if (!Number.isInteger(count) || count < 1 || count > 4)
             errors.push("Choose an integer GPU count within the documented limits.");
           if (Number(s.gpus_per_node) !== p.gpus) errors.push("This recipe requires " + p.gpus + " GPUs / node.");
           if (["tp_size", "ulysses_degree", "ring_degree"].some((key) => Number(t[key]) !== p.topology[key]))

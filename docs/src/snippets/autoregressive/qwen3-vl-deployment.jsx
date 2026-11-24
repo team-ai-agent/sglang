@@ -12,7 +12,8 @@ export const Qwen3VLDeployment = () => {
         { id: 'mi300x', label: 'MI300X', default: false },
         { id: 'mi325x', label: 'MI325X', default: false },
         { id: 'mi355x', label: 'MI355X', default: false },
-        { id: 'xeon', label: 'XEON', default: false }
+        { id: 'xeon', label: 'XEON', default: false },
+        { id: 'arc_b', label: 'BMG', default: false }
       ]
     },
     modelsize: {
@@ -77,7 +78,8 @@ export const Qwen3VLDeployment = () => {
       mi300x: { tp: 1, ep: 0, bf16: true, fp8: true },
       mi325x: { tp: 1, ep: 0, bf16: true, fp8: true },
       mi355x: { tp: 1, ep: 0, bf16: true, fp8: true },
-      xeon: { tp: 3, ep: 0, bf16: true, fp8: true }
+      xeon: { tp: 3, ep: 0, bf16: true, fp8: true },
+      arc_b: { tp: 4, fp8Tp: 2, ep: 0, bf16: true, fp8: true }
     },
     '32b': {
       baseName: '32B',
@@ -89,7 +91,8 @@ export const Qwen3VLDeployment = () => {
       mi300x: { tp: 1, ep: 0, bf16: true, fp8: true },
       mi325x: { tp: 1, ep: 0, bf16: true, fp8: true },
       mi355x: { tp: 1, ep: 0, bf16: true, fp8: true },
-      xeon: { tp: 6, ep: 0, bf16: true, fp8: true }
+      xeon: { tp: 6, ep: 0, bf16: true, fp8: true },
+      arc_b: { tp: 4, ep: 0, bf16: true, fp8: true }
     },
     '8b': {
       baseName: '8B',
@@ -101,7 +104,8 @@ export const Qwen3VLDeployment = () => {
       mi300x: { tp: 1, ep: 0, bf16: true, fp8: true },
       mi325x: { tp: 1, ep: 0, bf16: true, fp8: true },
       mi355x: { tp: 1, ep: 0, bf16: true, fp8: true },
-      xeon: { tp: 3, ep: 0, bf16: true, fp8: true }
+      xeon: { tp: 3, ep: 0, bf16: true, fp8: true },
+      arc_b: { tp: 1, ep: 0, bf16: true, fp8: true }
     },
     '4b': {
       baseName: '4B',
@@ -113,7 +117,8 @@ export const Qwen3VLDeployment = () => {
       mi300x: { tp: 1, ep: 0, bf16: true, fp8: true },
       mi325x: { tp: 1, ep: 0, bf16: true, fp8: true },
       mi355x: { tp: 1, ep: 0, bf16: true, fp8: true },
-      xeon: { tp: 3, ep: 0, bf16: true, fp8: true }
+      xeon: { tp: 3, ep: 0, bf16: true, fp8: true },
+      arc_b: { tp: 1, ep: 0, bf16: true, fp8: true }
     },
     '2b': {
       baseName: '2B',
@@ -125,7 +130,8 @@ export const Qwen3VLDeployment = () => {
       mi300x: { tp: 1, ep: 0, bf16: true, fp8: true },
       mi325x: { tp: 1, ep: 0, bf16: true, fp8: true },
       mi355x: { tp: 1, ep: 0, bf16: true, fp8: true },
-      xeon: { tp: 3, ep: 0, bf16: true, fp8: true }
+      xeon: { tp: 3, ep: 0, bf16: true, fp8: true },
+      arc_b: { tp: 1, ep: 0, bf16: true, fp8: false }
     }
   };
 
@@ -159,7 +165,21 @@ export const Qwen3VLDeployment = () => {
   }, []);
 
   const handleRadioChange = (optionName, value) => {
-    setValues(prev => ({ ...prev, [optionName]: value }));
+    setValues(prev => {
+      const next = { ...prev, [optionName]: value };
+      if (next.hardware === 'arc_b') {
+        if (next.modelsize === '235b') {
+          next.modelsize = '32b';
+        }
+        if (next.modelsize === '2b') {
+          next.quantization = 'bf16';
+          next.thinking = 'thinking';
+        } else if (next.modelsize === '8b') {
+          next.thinking = 'thinking';
+        }
+      }
+      return next;
+    });
   };
 
   // Generate command
@@ -167,6 +187,7 @@ export const Qwen3VLDeployment = () => {
     const { hardware, modelsize, quantization, thinking, toolcall } = values;
     const commandKey = `${hardware}-${modelsize}-${quantization}-${thinking}`;
     const isXeon = hardware === 'xeon';
+    const isArcB = hardware === 'arc_b';
 
     // Special error handling
     if (commandKey === 'h100-235b-bf16-instruct' || commandKey === 'h100-235b-bf16-thinking') {
@@ -187,18 +208,28 @@ export const Qwen3VLDeployment = () => {
     const thinkingSuffix = thinking === 'thinking' ? '-Thinking' : '-Instruct';
     const modelName = `Qwen/Qwen3-VL-${config.baseName}${thinkingSuffix}${quantSuffix}`;
 
+    const resolvedTp =
+      quantization === 'fp8' && hwConfig.fp8Tp !== undefined
+        ? hwConfig.fp8Tp
+        : hwConfig.tp;
+
     let cmd = 'python -m sglang.launch_server \\\n';
     cmd += `  --model ${modelName}`;
     if (isXeon) {
       cmd += ` \\\n  --device cpu \\\n  --disable-overlap-schedule`;
+    } else if (isArcB) {
+      cmd += ` \\\n  --device xpu \\\n  --attention-backend intel_xpu`;
+      if (resolvedTp > 1) {
+        cmd += ` \\\n  --page-size 64`;
+      }
     }
 
-    if (hwConfig.tp > 1) {
-      cmd += ` \\\n  --tp ${hwConfig.tp}`;
+    if (resolvedTp > 1) {
+      cmd += ` \\\n  --tp ${resolvedTp}`;
     }
 
     let ep = hwConfig.ep;
-    if (quantization === 'fp8' && hwConfig.tp === 8) {
+    if (quantization === 'fp8' && resolvedTp === 8) {
       ep = 2;
     }
 
@@ -251,10 +282,15 @@ export const Qwen3VLDeployment = () => {
           <div style={itemsStyle}>
             {option.items.map(item => {
               const isChecked = values[option.name] === item.id;
-              const isDisabled = item.disabled;
+              const isArcBLocked =
+                values.hardware === 'arc_b' &&
+                ((option.name === 'modelsize' && item.id === '235b') ||
+                  (option.name === 'quantization' && values.modelsize === '2b' && item.id === 'fp8') ||
+                  (option.name === 'thinking' && ['2b', '8b'].includes(values.modelsize) && item.id === 'instruct'));
+              const isDisabled = Boolean(item.disabled || isArcBLocked);
               return (
                 <label key={item.id} style={{ ...labelBaseStyle, ...(isChecked ? checkedStyle : {}), ...(isDisabled ? disabledStyle : {}) }}>
-                  <input type="radio" name={option.name} value={item.id} checked={isChecked} disabled={isDisabled} onChange={() => handleRadioChange(option.name, item.id)} style={{ display: 'none' }} />
+                  <input type="radio" name={option.name} value={item.id} checked={isChecked} disabled={isDisabled} onChange={() => !isDisabled && handleRadioChange(option.name, item.id)} style={{ display: 'none' }} />
                   {item.label}
                   {item.subtitle && <small style={{ ...subtitleStyle, color: isChecked ? 'rgba(255,255,255,0.85)' : 'inherit' }}>{item.subtitle}</small>}
                 </label>

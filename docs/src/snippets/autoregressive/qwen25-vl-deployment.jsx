@@ -7,7 +7,8 @@ export const Qwen25VLDeployment = () => {
         { id: 'mi300x', label: 'MI300X', default: true },
         { id: 'mi325x', label: 'MI325X', default: false },
         { id: 'mi355x', label: 'MI355X', default: false },
-        { id: 'xeon', label: 'XEON', default: false }
+        { id: 'xeon', label: 'XEON', default: false },
+        { id: 'arc_b', label: 'BMG', default: false }
       ]
     },
     modelsize: {
@@ -18,6 +19,12 @@ export const Qwen25VLDeployment = () => {
         { id: '32b', label: '32B', subtitle: 'Dense', default: false },
         { id: '7b', label: '7B', subtitle: 'Dense', default: false },
         { id: '3b', label: '3B', subtitle: 'Dense', default: false }
+      ],
+      getDynamicItems: (values) => [
+        { id: '72b', label: '72B', subtitle: 'Dense', default: true, disabled: values.hardware === 'arc_b' },
+        { id: '32b', label: '32B', subtitle: 'Dense', default: false, disabled: values.hardware === 'arc_b' },
+        { id: '7b', label: '7B', subtitle: 'Dense', default: false },
+        { id: '3b', label: '3B', subtitle: 'Dense', default: false, disabled: values.hardware === 'arc_b' }
       ]
     },
     quantization: {
@@ -49,7 +56,8 @@ export const Qwen25VLDeployment = () => {
       mi300x: { tp: 1, ep: 0 },
       mi325x: { tp: 1, ep: 0 },
       mi355x: { tp: 1, ep: 0 },
-      xeon: { tp: 3, ep: 0 }
+      xeon: { tp: 3, ep: 0 },
+      arc_b: { tp: 1, ep: 0 }
     },
     '3b': {
       baseName: '3B',
@@ -80,6 +88,8 @@ export const Qwen25VLDeployment = () => {
 
     if (hardware === 'xeon') {
       cmd += ` \\\n  --device cpu \\\n  --disable-overlap-schedule`;
+    } else if (hardware === 'arc_b') {
+      cmd += ` \\\n  --device xpu \\\n  --attention-backend intel_xpu`;
     }
 
     if (hwConfig.tp > 1) {
@@ -151,7 +161,13 @@ export const Qwen25VLDeployment = () => {
   }, []);
 
   const handleRadioChange = (optionName, value) => {
-    setValues((prev) => ({ ...prev, [optionName]: value }));
+    setValues((prev) => {
+      const next = { ...prev, [optionName]: value };
+      if (optionName === 'hardware' && value === 'arc_b') {
+        next.modelsize = '7b';
+      }
+      return next;
+    });
   };
 
   const handleCheckboxChange = (optionName, itemId, isChecked) => {

@@ -7,7 +7,8 @@ export const GLM47FlashDeployment = () => {
       items: [
         { id: 'h100', label: 'H100', default: true },
         { id: 'h200', label: 'H200', default: false },
-        { id: 'b200', label: 'B200', default: false }
+        { id: 'b200', label: 'B200', default: false },
+        { id: 'arc_b', label: 'BMG', default: false }
       ]
     },
     quantization: {
@@ -23,7 +24,7 @@ export const GLM47FlashDeployment = () => {
       type: 'checkbox',
       items: [
         { id: 'tp', label: 'TP', subtitle: 'Tensor Parallel', default: true, required: true },
-        { id: 'mtp', label: 'MTP', subtitle: 'Multi-token Prediction', default: false }
+        { id: 'mtp', label: 'MTP', subtitle: 'Multi-token Prediction', default: false, disabledWhen: (v) => v.hardware === 'arc_b' }
       ]
     },
     thinking: {
@@ -77,7 +78,13 @@ export const GLM47FlashDeployment = () => {
   }, []);
 
   const handleRadioChange = (optionName, value) => {
-    setValues(prev => ({ ...prev, [optionName]: value }));
+    setValues(prev => {
+      const next = { ...prev, [optionName]: value };
+      if (optionName === 'hardware' && value === 'arc_b') {
+        next.strategy = ['tp'];
+      }
+      return next;
+    });
   };
 
   const handleCheckboxChange = (optionName, itemId, isChecked) => {
@@ -99,10 +106,14 @@ export const GLM47FlashDeployment = () => {
     const modelName = `zai-org/GLM-4.7-Flash`;
 
     // GLM-4.7-Flash is a 30B-A3B MoE model, lighter than GLM-4.7
-    const tpValue = 1; // Default for single GPU
+    const isArcB = hardware === 'arc_b';
+    const tpValue = isArcB ? 4 : 1;
 
     let cmd = 'python -m sglang.launch_server \\\n ';
     cmd += `  --model ${modelName}`;
+    if (isArcB) {
+      cmd += ` \\\n   --device xpu \\\n   --attention-backend intel_xpu \\\n   --page-size 128`;
+    }
 
     // TP is mandatory
     cmd += ` \\\n   --tp ${tpValue}`;
@@ -112,7 +123,7 @@ export const GLM47FlashDeployment = () => {
     }
 
     // Strategy-specific parameters
-    if (strategyArray.includes('mtp')) {
+    if (!isArcB && strategyArray.includes('mtp')) {
 
       if (hardware === 'b200') {
         cmd += ` \\\n   --speculative-draft-attention-backend triton`;
@@ -153,10 +164,11 @@ export const GLM47FlashDeployment = () => {
             {option.type === 'checkbox' ? (
               option.items.map(item => {
                 const isChecked = (values[option.name] || []).includes(item.id);
-                const isDisabled = item.required;
+                const dynDisabled = typeof item.disabledWhen === 'function' && item.disabledWhen(values);
+                const isDisabled = item.required || dynDisabled;
                 return (
                   <label key={item.id} style={{ ...labelBaseStyle, ...(isChecked ? checkedStyle : {}), ...(isDisabled ? disabledStyle : {}) }}>
-                    <input type="checkbox" checked={isChecked} disabled={isDisabled} onChange={(e) => handleCheckboxChange(option.name, item.id, e.target.checked)} style={{ display: 'none' }} />
+                    <input type="checkbox" checked={isChecked} disabled={isDisabled} onChange={(e) => !isDisabled && handleCheckboxChange(option.name, item.id, e.target.checked)} style={{ display: 'none' }} />
                     {item.label}
                     {item.subtitle && <small style={{ ...subtitleStyle, color: isChecked ? 'rgba(255,255,255,0.85)' : 'inherit' }}>{item.subtitle}</small>}
                   </label>

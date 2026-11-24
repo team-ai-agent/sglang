@@ -6,6 +6,10 @@ export const Ernie45Deployment = () => {
       items: [
         { id: '21b', label: '21B', subtitle: 'A3B', default: true },
         { id: '300b', label: '300B', subtitle: 'A47B', default: false }
+      ],
+      getDynamicItems: (values) => [
+        { id: '21b', label: '21B', subtitle: 'A3B', default: true },
+        { id: '300b', label: '300B', subtitle: 'A47B', default: false, disabled: values.hardware === 'arc_b' }
       ]
     },
     hardware: {
@@ -15,7 +19,8 @@ export const Ernie45Deployment = () => {
         { id: 'mi300x', label: 'MI300X', default: true },
         { id: 'mi325x', label: 'MI325X', default: false },
         { id: 'mi355x', label: 'MI355X', default: false },
-        { id: 'xeon', label: 'XEON', default: false }
+        { id: 'xeon', label: 'XEON', default: false },
+        { id: 'arc_b', label: 'BMG', default: false }
       ]
     },
     strategy: {
@@ -24,8 +29,8 @@ export const Ernie45Deployment = () => {
       type: 'checkbox',
       items: [
         { id: 'tp', label: 'TP', subtitle: 'Tensor Parallel', default: true, required: true },
-        { id: 'dp', label: 'DP', subtitle: 'Data Parallel', default: false, disabledWhen: (values) => values.modelsize === '21b' || values.hardware === 'xeon' },
-        { id: 'ep', label: 'EP', subtitle: 'Expert Parallel', default: false, disabledWhen: (values) => values.modelsize === '21b' || values.hardware === 'xeon' }
+        { id: 'dp', label: 'DP', subtitle: 'Data Parallel', default: false, disabledWhen: (values) => values.modelsize === '21b' || values.hardware === 'xeon' || values.hardware === 'arc_b' },
+        { id: 'ep', label: 'EP', subtitle: 'Expert Parallel', default: false, disabledWhen: (values) => values.modelsize === '21b' || values.hardware === 'xeon' || values.hardware === 'arc_b' }
       ]
     }
   };
@@ -48,11 +53,14 @@ export const Ernie45Deployment = () => {
     cmd += `  --model-path ${modelPath}`;
 
     const isXeon = hardware === 'xeon';
+    const isArcB = hardware === 'arc_b';
     if (isXeon) {
       cmd += ` \\\n  --device cpu \\\n  --disable-overlap-schedule`;
+    } else if (isArcB) {
+      cmd += ` \\\n  --device xpu \\\n  --attention-backend intel_xpu \\\n  --page-size 64`;
     }
 
-    const tpValue = isXeon ? 6 : (modelsize === '300b' ? 8 : 1);
+    const tpValue = isXeon ? 6 : isArcB ? 4 : (modelsize === '300b' ? 8 : 1);
     const dpValue = modelsize === '300b' ? 8 : null;
     const epValue = modelsize === '300b' ? 8 : null;
 
@@ -60,11 +68,11 @@ export const Ernie45Deployment = () => {
       cmd += ` \\\n  --tp ${tpValue}`;
     }
 
-    if (strategyArray.includes('dp') && modelsize === '300b' && !isXeon) {
+    if (strategyArray.includes('dp') && modelsize === '300b' && !isXeon && !isArcB) {
       cmd += ` \\\n  --attn-dp-size ${dpValue}`;
     }
 
-    if (strategyArray.includes('ep') && modelsize === '300b' && !isXeon) {
+    if (strategyArray.includes('ep') && modelsize === '300b' && !isXeon && !isArcB) {
       cmd += ` \\\n  --ep ${epValue}`;
     }
 
@@ -129,7 +137,14 @@ export const Ernie45Deployment = () => {
   }, []);
 
   const handleRadioChange = (optionName, value) => {
-    setValues((prev) => ({ ...prev, [optionName]: value }));
+    setValues((prev) => {
+      const next = { ...prev, [optionName]: value };
+      if (optionName === 'hardware' && value === 'arc_b') {
+        next.modelsize = '21b';
+        next.strategy = ['tp'];
+      }
+      return next;
+    });
   };
 
   const handleCheckboxChange = (optionName, itemId, isChecked) => {

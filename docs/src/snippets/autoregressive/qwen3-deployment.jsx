@@ -24,7 +24,7 @@ export const Qwen3Deployment = () => {
       mi325x: { tp: 1, ep: 0, bf16: true, fp8: true },
       mi355x: { tp: 1, ep: 0, bf16: true, fp8: true },
       xeon:   { tp: 3, ep: 0, bf16: true, fp8: true },
-      arc_b:  { tp: 4, ep: 0, bf16: true, fp8: true },
+      arc_b:  { tp: 4, fp8Tp: 2, ep: 0, bf16: true, fp8: true },
     },
     '32b': {
       baseName: '32B',
@@ -49,7 +49,8 @@ export const Qwen3Deployment = () => {
       mi300x: { tp: 1, ep: 0, bf16: true, fp8: true },
       mi325x: { tp: 1, ep: 0, bf16: true, fp8: true },
       mi355x: { tp: 1, ep: 0, bf16: true, fp8: true },
-      xeon: { tp: 3, ep: 0, bf16: true, fp8: true }
+      xeon: { tp: 3, ep: 0, bf16: true, fp8: true },
+      arc_b: { tp: 4, fp8Tp: 1, ep: 0, bf16: true, fp8: true }
     },
     '8b': {
       baseName: '8B',
@@ -61,7 +62,8 @@ export const Qwen3Deployment = () => {
       mi300x: { tp: 1, ep: 0, bf16: true, fp8: true },
       mi325x: { tp: 1, ep: 0, bf16: true, fp8: true },
       mi355x: { tp: 1, ep: 0, bf16: true, fp8: true },
-      xeon: { tp: 3, ep: 0, bf16: true, fp8: true }
+      xeon: { tp: 3, ep: 0, bf16: true, fp8: true },
+      arc_b: { tp: 1, ep: 0, bf16: true, fp8: true }
     },
     '4b': {
       baseName: '4B',
@@ -73,7 +75,8 @@ export const Qwen3Deployment = () => {
       mi300x: { tp: 1, ep: 0, bf16: true, fp8: true },
       mi325x: { tp: 1, ep: 0, bf16: true, fp8: true },
       mi355x: { tp: 1, ep: 0, bf16: true, fp8: true },
-      xeon: { tp: 3, ep: 0, bf16: true, fp8: true }
+      xeon: { tp: 3, ep: 0, bf16: true, fp8: true },
+      arc_b: { tp: 1, ep: 0, bf16: true, fp8: true }
     },
     '1.7b': {
       baseName: '1.7B',
@@ -85,7 +88,8 @@ export const Qwen3Deployment = () => {
       mi300x: { tp: 1, ep: 0, bf16: true, fp8: true },
       mi325x: { tp: 1, ep: 0, bf16: true, fp8: true },
       mi355x: { tp: 1, ep: 0, bf16: true, fp8: true },
-      xeon: { tp: 3, ep: 0, bf16: true, fp8: true }
+      xeon: { tp: 3, ep: 0, bf16: true, fp8: true },
+      arc_b: { tp: 1, ep: 0, bf16: true, fp8: true }
     },
     '0.6b': {
       baseName: '0.6B',
@@ -97,7 +101,8 @@ export const Qwen3Deployment = () => {
       mi300x: { tp: 1, ep: 0, bf16: true, fp8: true },
       mi325x: { tp: 1, ep: 0, bf16: true, fp8: true },
       mi355x: { tp: 1, ep: 0, bf16: true, fp8: true },
-      xeon: { tp: 3, ep: 0, bf16: true, fp8: true }
+      xeon: { tp: 3, ep: 0, bf16: true, fp8: true },
+      arc_b: { tp: 1, ep: 0, bf16: true, fp8: true }
     }
   };
 
@@ -173,25 +178,20 @@ export const Qwen3Deployment = () => {
     const currentModelConfig = modelConfigs[values.modelsize];
 
     if (values.hardware === 'arc_b') {
-      options.quantization = {
-        ...baseOptions.quantization,
-        items: baseOptions.quantization.items.map(item => ({
-          ...item,
-          disabled: item.id !== 'bf16'
-        }))
-      };
-
       options.modelsize = {
         ...baseOptions.modelsize,
         items: baseOptions.modelsize.items.map(item => ({
           ...item,
-          disabled: item.id !== '30b' && item.id !== '32b'
+          disabled: item.id === '235b'
         }))
       };
     }
 
-    // If model doesn't have thinking variants, disable non-base category options
-    if (values.hardware === 'arc_b' || (currentModelConfig && !currentModelConfig.hasThinkingVariants)) {
+    // If model doesn't have thinking variants (or 30B BF16 on BMG where only base is verified), disable non-base category options
+    if (
+      (currentModelConfig && !currentModelConfig.hasThinkingVariants) ||
+      (values.hardware === 'arc_b' && values.modelsize === '30b' && values.quantization === 'bf16')
+    ) {
       options.category = {
         ...baseOptions.category,
         items: baseOptions.category.items.map(item => ({
@@ -242,10 +242,15 @@ export const Qwen3Deployment = () => {
       const newValues = { ...prev, [optionName]: value };
 
       if (optionName === 'hardware' && value === 'arc_b') {
-        newValues.quantization = 'bf16';
-        if (newValues.modelsize !== '30b' && newValues.modelsize !== '32b') {
+        if (newValues.modelsize === '235b') {
           newValues.modelsize = '32b';
         }
+        if (newValues.modelsize === '30b' && newValues.quantization === 'bf16') {
+          newValues.category = 'base';
+        }
+      }
+
+      if (newValues.hardware === 'arc_b' && newValues.modelsize === '30b' && newValues.quantization === 'bf16') {
         newValues.category = 'base';
       }
 
@@ -271,7 +276,7 @@ export const Qwen3Deployment = () => {
   // Generate command
   const generateCommand = () => {
     const { hardware, modelsize, quantization, category, reasoningParser, toolcall } = values;
-    const effectiveQuantization = hardware === 'arc_b' ? 'bf16' : quantization;
+    const effectiveQuantization = quantization;
 
     // Special error handling
     const commandKey = `${hardware}-${modelsize}-${effectiveQuantization}-${category}`;
@@ -314,12 +319,17 @@ export const Qwen3Deployment = () => {
       cmd += ` \\\n  --device xpu`;
     }
 
-    if (hwConfig.tp > 1) {
-      cmd += ` \\\n  --tp ${hwConfig.tp}`;
+    const resolvedTp =
+      effectiveQuantization === 'fp8' && hwConfig.fp8Tp !== undefined
+        ? hwConfig.fp8Tp
+        : hwConfig.tp;
+
+    if (resolvedTp > 1) {
+      cmd += ` \\\n  --tp ${resolvedTp}`;
     }
 
     let ep = hwConfig.ep;
-    if (effectiveQuantization === 'fp8' && hwConfig.tp === 8) {
+    if (effectiveQuantization === 'fp8' && resolvedTp === 8) {
       ep = 2;
     }
 
