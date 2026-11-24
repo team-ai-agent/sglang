@@ -20,7 +20,11 @@
 export const config = {
   modelName: "Laguna-S-2.1",
 
-  supportedHardware: ["h200", "b300", "gb300"],
+  supportedHardware: ["h200", "b300", "gb300", "xeon"],
+  hardware: [
+    { id: "xeon", label: "XEON", vram: "CPU", vendor: "cpu" },
+  ],
+  runModes: (s) => s.hw === "xeon" ? ["python"] : ["python", "docker"],
 
   variants: [
     { id: "default", label: "Default" },
@@ -112,7 +116,9 @@ sgl-eval run aime25 \\
   },
 
   playgroundFeatures: {
+    normalizeDeltas: (deltas, derived, base) => base.hw === "xeon" ? {} : deltas,
     attention: {
+      showWhen: (base) => base.hw !== "xeon",
       knobs: [
         { id: "tp", label: "TP", values: [null, 1, 2, 4, 8] },
       ],
@@ -498,6 +504,38 @@ sgl-eval run aime25 \\
         "--speculative-draft-model-path poolside/Laguna-S-2.1-DFlash-INT4",
         "--page-size 1",
         "--mem-fraction-static 0.7",
+        "--host {{HOST_IP}}",
+        "--port {{PORT}}",
+      ],
+    },
+    {
+      match: { hw: "xeon", variant: "default", quant: "bf16", strategy: "high-throughput", nodes: "single" },
+      verified: true,
+      env: [],
+      flags: [
+        "--model-path {{MODEL_NAME}}",
+        "--device cpu",
+        "--disable-overlap-schedule",
+        "--trust-remote-code",
+        "--reasoning-parser poolside_v1",
+        "--tool-call-parser poolside_v1",
+        "--tp 4",
+        "--host {{HOST_IP}}",
+        "--port {{PORT}}",
+      ],
+    },
+    {
+      match: { hw: "xeon", variant: "default", quant: "fp8", strategy: "high-throughput", nodes: "single" },
+      verified: true,
+      env: [],
+      flags: [
+        "--model-path {{MODEL_NAME}}",
+        "--device cpu",
+        "--disable-overlap-schedule",
+        "--trust-remote-code",
+        "--reasoning-parser poolside_v1",
+        "--tool-call-parser poolside_v1",
+        "--tp 4",
         "--host {{HOST_IP}}",
         "--port {{PORT}}",
       ],

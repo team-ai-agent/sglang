@@ -248,8 +248,13 @@ export const Gemma4Deployment = () => {
         next.checkpoint = 'standard';
         next.speculative = 'disabled';
       }
-      if (optionName === 'hardware' && value === 'xeon') {
-        next.checkpoint = 'standard';
+      if (
+        (optionName === 'hardware' && value === 'xeon') ||
+        (next.hardware === 'xeon' && optionName === 'modelSize')
+      ) {
+        if (!['e2b', 'e4b', '31b'].includes(next.modelSize)) {
+          next.checkpoint = 'standard';
+        }
       }
       return next;
     });
@@ -441,7 +446,8 @@ export const Gemma4Deployment = () => {
                   const isXeonQatLocked =
                     values.hardware === 'xeon' &&
                     option.name === 'checkpoint' &&
-                    item.id === 'qat';
+                    item.id === 'qat' &&
+                    !['e2b', 'e4b', '31b'].includes(values.modelSize);
                   const isXeon12bLocked =
                     values.hardware === 'xeon' &&
                     option.name === 'modelSize' &&

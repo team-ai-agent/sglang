@@ -4,7 +4,11 @@
 export const config = {
   modelName: "Intern-S2-Mobius",
 
-  supportedHardware: ["h200", "b200"],
+  supportedHardware: ["h200", "b200", "xeon"],
+  hardware: [
+    { id: "xeon", label: "XEON", vram: "CPU", vendor: "cpu" },
+  ],
+  runModes: (s) => s.hw === "xeon" ? ["python"] : ["python", "docker"],
 
   variants: [
     { id: "default", label: "Intern-S2-Mobius", subtitle: "Mobius-v0" },
@@ -93,8 +97,10 @@ sgl-eval run gpqa \\
   },
 
   playgroundFeatures: {
+    normalizeDeltas: (deltas, derived, base) => base.hw === "xeon" ? {} : deltas,
     // ----- Card: "Attention Parallelism" -----
     attention: {
+      showWhen: (base) => base.hw !== "xeon",
       knobs: [
         { id: "tp", label: "TP", values: [null, 1, 2, 4, 8] },
         { id: "cp", label: "CP", values: [null, 1, 2, 4] },
@@ -118,6 +124,7 @@ sgl-eval run gpqa \\
 
     // ----- Card: "Speculative Decoding" -----  MTP (NEXTN) is the cook-worthy preset.
     speculative: {
+      showWhen: (base) => base.hw !== "xeon",
       options: [
         { id: "current", label: "Inherited from base" },
         { id: "off",     label: "Off (greedy)" },
@@ -286,6 +293,22 @@ sgl-eval run gpqa \\
         "--moe-runner-backend deep_gemm",
         "--disable-prefill-cuda-graph",
         "--cuda-graph-max-bs-decode 16",
+        "--host {{HOST_IP}}",
+        "--port {{PORT}}",
+      ],
+    },
+    {
+      match: { hw: "xeon", variant: "default", quant: "bf16", strategy: "high-throughput", nodes: "single" },
+      verified: true,
+      env: [],
+      flags: [
+        "--trust-remote-code",
+        "--model-path {{MODEL_NAME}}",
+        "--device cpu",
+        "--disable-overlap-schedule",
+        "--tp 4",
+        "--mem-fraction-static 0.8",
+        "--reasoning-parser qwen3",
         "--host {{HOST_IP}}",
         "--port {{PORT}}",
       ],

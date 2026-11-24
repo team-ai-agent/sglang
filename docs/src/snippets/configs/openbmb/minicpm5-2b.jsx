@@ -28,7 +28,7 @@
 export const config = {
   modelName: "MiniCPM5-2B",
 
-  supportedHardware: ["h200", "rtxpro6000", "rtx5090", "dgx-spark"],
+  supportedHardware: ["h200", "rtxpro6000", "rtx5090", "dgx-spark", "xeon"],
 
   // RTX PRO 6000 and RTX 5090 (SM120 / Blackwell workstation + desktop) are not
   // datacenter parts, so the shared HARDWARE_CATALOG in _deployment.jsx does not
@@ -36,7 +36,9 @@ export const config = {
   hardware: [
     { id: "rtxpro6000", label: "RTX PRO 6000", vram: "96GB", vendor: "blackwell" },
     { id: "rtx5090", label: "RTX 5090", vram: "32GB", vendor: "blackwell" },
+    { id: "xeon", label: "XEON", vram: "CPU", vendor: "cpu" },
   ],
+  runModes: (s) => s.hw === "xeon" ? ["python"] : ["python", "docker"],
 
   matchDims: [
     { id: "variant", title: "Model Variant", options: [
@@ -59,6 +61,8 @@ export const config = {
         { id: "none", label: "None" },
         {
           id: "dspark", label: "DSPARK",
+          disabled: (sel) => sel.hw === "xeon",
+          disableReason: "DSpark speculative decoding is not validated on Xeon",
           // Verbatim from the model card's DSpark command, including
           // `--trust-remote-code`: the base checkpoint is plain Llama and does
           // not need it, the draft checkpoint's config does. gamma = 7, so the
@@ -120,9 +124,11 @@ export const config = {
   },
 
   playgroundFeatures: {
+    normalizeDeltas: (deltas, derived, base) => base.hw === "xeon" ? {} : deltas,
     // The model fits one GPU on every supported card, so TP=1 is the verified
     // shape; TP=2 is exposed for experimentation only.
     attention: {
+      showWhen: (base) => base.hw !== "xeon",
       knobs: [
         { id: "tp", label: "TP", values: [null, 1, 2] },
       ],
@@ -143,6 +149,7 @@ export const config = {
     // Same DSpark flags as the Deploy panel's overlay row, so the two paths
     // compose an identical command.
     speculative: {
+      showWhen: (base) => base.hw !== "xeon",
       options: [
         { id: "current", label: "Inherited from base" },
         { id: "off",     label: "Off (greedy)" },
@@ -226,6 +233,21 @@ export const config = {
         "--tool-call-parser minicpm5",
         "--mem-fraction-static 0.30",
         "--cuda-graph-max-bs-decode 128",
+        "--host {{HOST_IP}}",
+        "--port {{PORT}}",
+      ],
+    },
+    {
+      match: { hw: "xeon", variant: "default", quant: "bf16", nodes: "single" },
+      verified: true,
+      env: [],
+      flags: [
+        "--model-path {{MODEL_NAME}}",
+        "--device cpu",
+        "--disable-overlap-schedule",
+        "--tp 6",
+        "--reasoning-parser qwen3",
+        "--tool-call-parser minicpm5",
         "--host {{HOST_IP}}",
         "--port {{PORT}}",
       ],

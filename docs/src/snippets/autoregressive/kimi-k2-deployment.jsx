@@ -11,7 +11,8 @@ export const KimiK2Deployment = () => {
         { id: 'b300', label: 'B300', default: false },
         { id: 'mi300x', label: 'MI300X', default: false },
         { id: 'mi325x', label: 'MI325X', default: false },
-        { id: 'mi355x', label: 'MI355X', default: false }
+        { id: 'mi355x', label: 'MI355X', default: false },
+        { id: 'xeon', label: 'XEON', default: false }
       ]
     },
     modelname: {
@@ -20,6 +21,10 @@ export const KimiK2Deployment = () => {
       items: [
         { id: 'instruct', label: 'Kimi-K2-Instruct', default: true },
         { id: 'thinking', label: 'Kimi-K2-Thinking', default: false }
+      ],
+      getDynamicItems: (values) => [
+        { id: 'instruct', label: 'Kimi-K2-Instruct', default: true },
+        { id: 'thinking', label: 'Kimi-K2-Thinking', default: false, disabled: values.hardware === 'xeon' }
       ]
     },
     strategy: {
@@ -28,8 +33,8 @@ export const KimiK2Deployment = () => {
       type: 'checkbox',
       items: [
         { id: 'tp', label: 'TP', default: true, required: true },
-        { id: 'dp', label: 'DP attention', default: false },
-        { id: 'ep', label: 'EP', default: false }
+        { id: 'dp', label: 'DP attention', default: false, disabledWhen: (v) => v.hardware === 'xeon' },
+        { id: 'ep', label: 'EP', default: false, disabledWhen: (v) => v.hardware === 'xeon' }
       ]
     },
     reasoning: {
@@ -38,6 +43,10 @@ export const KimiK2Deployment = () => {
       items: [
         { id: 'disabled', label: 'Disabled', default: true },
         { id: 'enabled', label: 'Enabled', default: false }
+      ],
+      getDynamicItems: (values) => [
+        { id: 'disabled', label: 'Disabled', default: true },
+        { id: 'enabled', label: 'Enabled', default: false, disabled: values.hardware === 'xeon' }
       ]
     },
     toolcall: {
@@ -72,12 +81,17 @@ export const KimiK2Deployment = () => {
 
     cmd += `  --model-path ${modelName}`;
 
+    const isXeon = hardware === 'xeon';
+    if (isXeon) {
+      cmd += ` \\\n  --device cpu \\\n  --disable-overlap-schedule`;
+    }
+
     const strategyArray = Array.isArray(strategy) ? strategy : [];
-    cmd += ` \\\n  --tp 8`;
-    if (strategyArray.includes('dp')) {
+    cmd += isXeon ? ` \\\n  --tp 6` : ` \\\n  --tp 8`;
+    if (!isXeon && strategyArray.includes('dp')) {
       cmd += ` \\\n  --attn-dp-size 4`;
     }
-    if (strategyArray.includes('ep')) {
+    if (!isXeon && strategyArray.includes('ep')) {
       cmd += ` \\\n  --ep 4`;
     }
 
@@ -161,7 +175,15 @@ export const KimiK2Deployment = () => {
   }, []);
 
   const handleRadioChange = (optionName, value) => {
-    setValues((prev) => ({ ...prev, [optionName]: value }));
+    setValues((prev) => {
+      const next = { ...prev, [optionName]: value };
+      if (optionName === 'hardware' && value === 'xeon') {
+        next.modelname = 'instruct';
+        next.reasoning = 'disabled';
+        next.strategy = (next.strategy || []).filter((id) => id === 'tp');
+      }
+      return next;
+    });
   };
 
   const handleCheckboxChange = (optionName, itemId, isChecked) => {
