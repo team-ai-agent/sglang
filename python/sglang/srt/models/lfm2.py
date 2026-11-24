@@ -257,6 +257,72 @@ def shortconv_target_verify(
     return conv_out.transpose(1, 2).reshape(bs * draft_token_num, -1)
 
 
+def shortconv_cpu(
+    conv: nn.Module,
+    x: torch.Tensor,
+    meta: "ShortConvMetadata",
+    forward_batch: ForwardBatch,
+    conv_state: Optional[torch.Tensor] = None,
+) -> torch.Tensor:
+    if forward_batch.forward_mode.is_target_verify():
+        raise NotImplementedError(
+            "LFM2 speculative short-convolution verification is not supported on CPU."
+        )
+    if conv_state is None:
+        conv_state = meta.layer_cache.conv[0]
+    decode = forward_batch.forward_mode.is_decode()
+    if hasattr(torch.ops.sgl_kernel, "short_conv1d_cpu"):
+        batch = x.shape[0] if decode else meta.cache_indices.shape[0]
+        if decode:
+            query_start_loc = torch.arange(batch + 1, dtype=torch.int32, device=x.device)
+            has_init = torch.ones(batch, dtype=torch.bool, device=x.device)
+        else:
+            qsl = getattr(meta, "query_start_loc", None)
+            if qsl is None:
+                lengths = [0] + list(forward_batch.extend_seq_lens_cpu)
+                query_start_loc = torch.tensor(lengths, dtype=torch.int32, device=x.device).cumsum(0, dtype=torch.int32)
+            else:
+                query_start_loc = qsl
+            has_init = meta.has_initial_state.to(dtype=torch.bool, device=x.device)
+        return torch.ops.sgl_kernel.short_conv1d_cpu(
+            x,
+            conv.conv_weight,
+            conv.conv_bias,
+            conv_state,
+            meta.cache_indices,
+            has_init,
+            query_start_loc,
+        )
+
+    seq_lens = [1] * x.shape[0] if decode else forward_batch.extend_seq_lens_cpu
+    has_initial_state = (
+        [True] * x.shape[0] if decode else meta.has_initial_state.tolist()
+    )
+    output = torch.zeros_like(x)
+    start = 0
+    for seq_len, slot, has_prefix in zip(
+        seq_lens, meta.cache_indices.tolist(), has_initial_state
+    ):
+        end = start + seq_len
+        if slot != -1 and seq_len:
+            state = conv_state[slot]
+            prefix = state if has_prefix else torch.zeros_like(state)
+            inputs = torch.cat((prefix, x[start:end].T), dim=-1)
+            output[start:end] = (
+                F.conv1d(
+                    inputs.unsqueeze(0),
+                    conv.conv_weight.unsqueeze(1),
+                    conv.conv_bias,
+                    groups=conv.hidden_size_per_partition,
+                )
+                .squeeze(0)
+                .T
+            )
+            state.copy_(inputs[:, -state.shape[-1] :])
+        start = end
+    return output
+
+
 class Lfm2ShortConv(nn.Module):
     """
     Gated short convolution layer using optimized causal_conv1d kernels.
@@ -339,7 +405,9 @@ class Lfm2ShortConv(nn.Module):
         B_gate, C_gate, x = proj.chunk(3, dim=-1)
         Bx = B_gate * x
 
-        if forward_batch.forward_mode.is_decode():
+        if Bx.device.type == "cpu":
+            conv_out = self._forward_cpu(Bx, conv_state, meta, forward_batch)
+        elif forward_batch.forward_mode.is_decode():
             # Decode: single token per request, use optimized update kernel
             conv_out = causal_conv1d_update(
                 Bx,
@@ -369,6 +437,15 @@ class Lfm2ShortConv(nn.Module):
 
         output, _ = self.out_proj(C_gate * conv_out)
         return output
+
+    def _forward_cpu(
+        self,
+        x: torch.Tensor,
+        conv_state: torch.Tensor,
+        meta: "ShortConvMetadata",
+        forward_batch: ForwardBatch,
+    ) -> torch.Tensor:
+        return shortconv_cpu(self, x, meta, forward_batch, conv_state=conv_state)
 
 
 class Lfm2BidirectionalShortConv(Lfm2ShortConv):

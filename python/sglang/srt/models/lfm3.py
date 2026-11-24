@@ -504,9 +504,25 @@ class Lfm3ShortConv(nn.Module):
         if proj.shape[0] == 0:
             return proj.new_zeros(0, D)
         if not _use_cute_conv:
+            Bx, C_gate = _lfm3_conv_input_gate(proj)
+            if proj.device.type == "cpu" and hasattr(
+                torch.ops.sgl_kernel, "short_conv1d_cpu"
+            ):
+                has_init = torch.ones(
+                    mamba_indices.shape[0], dtype=torch.bool, device=proj.device
+                )
+                y = torch.ops.sgl_kernel.short_conv1d_cpu(
+                    Bx,
+                    self.conv_weight,
+                    self.conv_bias,
+                    conv_state,
+                    mamba_indices,
+                    has_init,
+                    query_start_loc,
+                )
+                return C_gate * y
             # Torch fallback: form Bx, run the channel-major F.conv1d
             # path on the transpose, then apply the C gate and return token-major.
-            Bx, C_gate = _lfm3_conv_input_gate(proj)
             Bx_t = Bx.transpose(0, 1).contiguous()  # (D, T)
             y_t = self._conv_prefill_torch(
                 Bx_t, conv_state, mamba_indices, query_start_loc
@@ -610,6 +626,24 @@ class Lfm3ShortConv(nn.Module):
         values of that window in place. Other devices use the compiled torch fallback.
         """
         if not _use_cute_conv:
+            if proj.device.type == "cpu" and hasattr(
+                torch.ops.sgl_kernel, "short_conv1d_cpu"
+            ):
+                B_gate, C_gate, x = proj.chunk(3, dim=-1)
+                Bx = B_gate * x
+                batch = Bx.shape[0]
+                qsl = torch.arange(batch + 1, dtype=torch.int32, device=Bx.device)
+                has_init = torch.ones(batch, dtype=torch.bool, device=Bx.device)
+                y = torch.ops.sgl_kernel.short_conv1d_cpu(
+                    Bx,
+                    self.conv_weight,
+                    self.conv_bias,
+                    conv_state,
+                    mamba_indices,
+                    has_init,
+                    qsl,
+                )
+                return C_gate * y
             return _lfm3_conv_decode_torch(
                 proj, conv_state, self.conv_weight, self.conv_bias, mamba_indices
             )

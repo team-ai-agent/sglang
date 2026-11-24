@@ -518,6 +518,15 @@ at::Tensor causal_conv1d_update_cpu(
     const std::optional<at::Tensor>& conv_state_indices,
     int64_t pad_slot_id,
     bool is_vnni);
+
+at::Tensor short_conv1d_cpu(
+    const at::Tensor& x,
+    const at::Tensor& weight,
+    const std::optional<at::Tensor>& bias,
+    at::Tensor& conv_states,
+    const at::Tensor& cache_indices,
+    const at::Tensor& has_initial_state,
+    const at::Tensor& query_start_loc);
 #endif
 
 // conv3d fast path for patch embedding
@@ -984,6 +993,11 @@ TORCH_LIBRARY_FRAGMENT(sgl_kernel, m) {
       "causal_conv1d_update_cpu(Tensor x, Tensor(a!) conv_states, Tensor weight, Tensor? bias, bool silu_activation,"
       "Tensor? cache_seqlens, Tensor? conv_state_indices, int pad_slot_id, bool is_vnni) -> Tensor");
   m.impl("causal_conv1d_update_cpu", torch::kCPU, &causal_conv1d_update_cpu);
+
+  m.def(
+      "short_conv1d_cpu(Tensor x, Tensor weight, Tensor? bias, Tensor(a!) conv_states, "
+      "Tensor cache_indices, Tensor has_initial_state, Tensor query_start_loc) -> Tensor");
+  m.impl("short_conv1d_cpu", torch::kCPU, &short_conv1d_cpu);
 #endif
 
   // conv3d fast path for patch embedding

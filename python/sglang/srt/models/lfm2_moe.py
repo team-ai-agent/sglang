@@ -55,6 +55,7 @@ from sglang.srt.model_loader.weight_utils import (
 )
 from sglang.srt.models.lfm2 import (
     register_shortconv_verify_buffers,
+    shortconv_cpu,
     shortconv_target_verify,
 )
 from sglang.srt.runtime_context import get_parallel
@@ -361,7 +362,12 @@ class Lfm2MoeShortConv(nn.Module):
             conv_state,
         )
 
-        if forward_batch.forward_mode.is_decode() and use_fused:
+        if x.device.type == "cpu":
+            conv_out = shortconv_cpu(
+                self, B_gate * x, meta, forward_batch, conv_state=conv_state
+            )
+            gated_conv_out = C_gate * conv_out
+        elif forward_batch.forward_mode.is_decode() and use_fused:
             gated_conv_out = fused_lfm_short_conv_decode(
                 B_gate,
                 C_gate,
