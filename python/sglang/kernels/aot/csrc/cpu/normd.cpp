@@ -413,6 +413,49 @@ inline void fused_scale_residual_norm_scale_shift_row(
       eps);
 }
 
+template <typename scalar_t>
+inline void fused_residual_gate_add_row(
+    scalar_t* __restrict__ output,
+    const scalar_t* __restrict__ residual,
+    const scalar_t* __restrict__ update,
+    const scalar_t* __restrict__ gate,
+    const float* __restrict__ gate_fp32,
+    int64_t D,
+    int64_t gate_stride_c) {
+  using bVec = at::vec::Vectorized<scalar_t>;
+  constexpr int64_t kVecSize = bVec::size();
+  int64_t d = 0;
+
+#pragma GCC unroll 4
+  for (; d <= D - kVecSize; d += kVecSize) {
+    auto [u0, u1] = load_float_vec2(update + d);
+    auto [r0, r1] = load_float_vec2(residual + d);
+    fVec g0, g1;
+    if (gate_fp32 != nullptr) {
+      load_param_vec2(g0, g1, gate_fp32, gate_stride_c, d);
+      convert_from_float_ext<scalar_t>(r0 + u0 * g0, r1 + u1 * g1).store(output + d);
+    } else {
+      load_param_vec2(g0, g1, gate, gate_stride_c, d);
+      // Match eager/CUDA BF16/FP16 rounding: round update * gate before adding residual.
+      const bVec prod = convert_from_float_ext<scalar_t>(u0 * g0, u1 * g1);
+      std::tie(u0, u1) = at::vec::convert_to_float(prod);
+      convert_from_float_ext<scalar_t>(r0 + u0, r1 + u1).store(output + d);
+    }
+  }
+
+#pragma GCC unroll 4
+  for (; d < D; ++d) {
+    const float u = static_cast<float>(update[d]);
+    const float r = static_cast<float>(residual[d]);
+    if (gate_fp32 != nullptr) {
+      output[d] = static_cast<scalar_t>(r + u * gate_fp32[d * gate_stride_c]);
+    } else {
+      const float prod = static_cast<float>(static_cast<scalar_t>(u * static_cast<float>(gate[d * gate_stride_c])));
+      output[d] = static_cast<scalar_t>(r + prod);
+    }
+  }
+}
+
 inline void check_modulation_param(const at::Tensor& param, const at::Tensor& input, const char* name) {
   CHECK_CPU(param);
   CHECK_DIM(3, param);
@@ -659,4 +702,63 @@ std::tuple<at::Tensor, at::Tensor> fused_scale_residual_norm_scale_shift_cpu(
 
   return {output, residual_output};
 }
+
+at::Tensor
+fused_residual_gate_add_cpu(const at::Tensor& residual, const at::Tensor& update, const at::Tensor& gate) {
+  CHECK_LAST_DIM_CONTIGUOUS_INPUT(residual);
+  CHECK_DIM(3, residual);
+
+  CHECK_LAST_DIM_CONTIGUOUS_INPUT(update);
+  CHECK_DIM(3, update);
+  CHECK_EQ(residual.sizes(), update.sizes());
+  CHECK_EQ(residual.scalar_type(), update.scalar_type());
+
+  check_modulation_param(gate, residual, "gate");
+  TORCH_CHECK(
+      gate.scalar_type() == residual.scalar_type() || gate.scalar_type() == at::ScalarType::Float,
+      "gate must have the same dtype as residual or be FP32.");
+
+  const int64_t B = residual.size(0);
+  const int64_t S = residual.size(1);
+  const int64_t D = residual.size(2);
+
+  at::Tensor output = at::empty(residual.sizes(), residual.options());
+  if (residual.numel() == 0) {
+    return output;
+  }
+
+  AT_DISPATCH_REDUCED_FLOATING_TYPES(residual.scalar_type(), "fused_residual_gate_add_cpu", [&] {
+    ModulationParam<scalar_t> gate_param{};
+    ModulationParam<float> gate_fp32_param{};
+    if (gate.scalar_type() == at::ScalarType::Float) {
+      gate_fp32_param = ModulationParam<float>(gate);
+    } else {
+      gate_param = ModulationParam<scalar_t>(gate);
+    }
+
+    const scalar_t* residual_ptr = residual.data_ptr<scalar_t>();
+    const scalar_t* update_ptr = update.data_ptr<scalar_t>();
+    scalar_t* output_ptr = output.data_ptr<scalar_t>();
+
+    const int64_t res_stride_b = residual.stride(0);
+    const int64_t res_stride_s = residual.stride(1);
+    const int64_t upd_stride_b = update.stride(0);
+    const int64_t upd_stride_s = update.stride(1);
+    const int64_t gate_stride_c = gate.stride(2);
+
+    parallel_for_rows(B, S, D, [&](int64_t b, int64_t s, int64_t offset) {
+      fused_residual_gate_add_row<scalar_t>(
+          output_ptr + offset,
+          residual_ptr + b * res_stride_b + s * res_stride_s,
+          update_ptr + b * upd_stride_b + s * upd_stride_s,
+          gate_param.row(b, s),
+          gate_fp32_param.row(b, s),
+          D,
+          gate_stride_c);
+    });
+  });
+
+  return output;
+}
+
 #undef DISPATCH_DIFFUSION_NORM_TYPE

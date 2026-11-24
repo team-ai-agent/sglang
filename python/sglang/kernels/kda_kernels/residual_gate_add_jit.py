@@ -374,6 +374,28 @@ def residual_gate_add(
         mode = _route(residual, update, gate)
         if mode is not None:
             return _residual_gate_add_custom_op(residual, update, gate, mode)
+        if (
+            not torch.compiler.is_compiling()
+            and residual.device.type == "cpu"
+            and update.device.type == "cpu"
+            and gate.device.type == "cpu"
+            and residual.dim() == 3
+            and residual.shape == update.shape
+            and residual.dtype == update.dtype
+            and residual.stride(-1) == 1
+            and update.stride(-1) == 1
+            and gate.dtype in (*_BIT_EXACT_DTYPES, torch.float32)
+            and hasattr(torch.ops.sgl_kernel, "fused_residual_gate_add_cpu")
+        ):
+            from sglang.kernels.ops.diffusion.modulate.scale_shift_triton import (
+                expand_scale_shift_cpu_param,
+            )
+
+            gate_exp = expand_scale_shift_cpu_param(gate, residual)
+            if gate_exp.stride(-1) in (0, 1):
+                return torch.ops.sgl_kernel.fused_residual_gate_add_cpu(
+                    residual, update, gate_exp
+                )
     return residual + update * gate
 
 

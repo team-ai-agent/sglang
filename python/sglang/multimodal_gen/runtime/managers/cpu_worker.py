@@ -31,9 +31,11 @@ class CPUWorker(GPUWorker):
         server_args: ServerArgs,
     ):
         os.environ["LOCAL_SIZE"] = str(server_args.num_gpus // server_args.nnodes)
-        super().__init__(local_rank, rank, master_port, server_args)
+        self.rank = rank
+        self.server_args = server_args
         if _is_cpu_amx_available:
             self.init_cpu_threads_binding()
+        super().__init__(local_rank, rank, master_port, server_args)
 
     def init_cpu_threads_binding(self):
         omp_cpuids = os.environ.get("SGLANG_CPU_OMP_THREADS_BIND", "all")
