@@ -209,6 +209,23 @@ def track_mamba_states_if_needed(
         mamba_track_indices: Indices to track for each batch element [batch_size]
         batch_size: Number of batch elements
     """
+    if conv_states.device.type == "cpu":
+        if batch_size == 0:
+            return
+        mask = mamba_track_mask[:batch_size].bool()
+        if not mask.any():
+            return
+        src = cache_indices[:batch_size][mask].long()
+        dst = mamba_track_indices[:batch_size][mask].long()
+        if check_freed_slots:
+            valid = (src >= 0) & (dst >= 0)
+            src, dst = src[valid], dst[valid]
+        if src.numel() > 0:
+            if conv_states.numel() > 0:
+                conv_states[dst] = conv_states[src]
+            if ssm_states.numel() > 0:
+                ssm_states[dst] = ssm_states[src]
+        return
     _launch_track_mamba_states(
         conv_states,
         ssm_states,
@@ -949,6 +966,23 @@ def track_mamba_states_all_layers(
     destination indices are shared across layers, so a single launch once
     every layer's state is final is equivalent to the per-layer launches.
     """
+    if conv_states_pool.device.type == "cpu":
+        if batch_size == 0:
+            return
+        mask = mamba_track_mask[:batch_size].bool()
+        if not mask.any():
+            return
+        src = cache_indices[:batch_size][mask].long()
+        dst = mamba_track_indices[:batch_size][mask].long()
+        if check_freed_slots:
+            valid = (src >= 0) & (dst >= 0)
+            src, dst = src[valid], dst[valid]
+        if src.numel() > 0:
+            if conv_states_pool.numel() > 0:
+                conv_states_pool[:, dst] = conv_states_pool[:, src]
+            if ssm_states_pool.numel() > 0:
+                ssm_states_pool[:, dst] = ssm_states_pool[:, src]
+        return
     _launch_track_mamba_states(
         conv_states_pool,
         ssm_states_pool,

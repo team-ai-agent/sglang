@@ -600,6 +600,7 @@ def register_fake_ops(tp_size: int):
         "shared_expert_cpu",
         "causal_conv1d_update_cpu",
         "causal_conv1d_fwd_cpu",
+        "short_conv1d_cpu",
         "gemma_rmsnorm_cpu",
         "gemma3_rmsnorm_cpu",
         "gemma4_rmsnorm_cpu",

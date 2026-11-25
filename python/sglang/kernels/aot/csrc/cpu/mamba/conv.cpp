@@ -701,3 +701,223 @@ at::Tensor causal_conv1d_update_cpu(
   });
   return out;
 }
+
+namespace {
+
+template <typename scalar_t>
+void short_conv1d_kernel_impl(
+    scalar_t* __restrict__ out,
+    const scalar_t* __restrict__ x,
+    int64_t x_s0,
+    const float* __restrict__ w_t,
+    const float* __restrict__ bias_f,
+    scalar_t* __restrict__ conv_states,
+    int64_t cs_s0,
+    int64_t cs_s1,
+    int64_t cs_s2,
+    const int64_t* __restrict__ cache_indices,
+    const bool* __restrict__ has_initial_state,
+    const int64_t* __restrict__ query_start_loc,
+    float* __restrict__ state_scratch,
+    int64_t batch,
+    int64_t dim,
+    int64_t width) {
+  using bVec = at::vec::Vectorized<scalar_t>;
+  using fVec = at::vec::Vectorized<float>;
+  constexpr int64_t kFloatVec = fVec::size();
+  constexpr int64_t kDualVec = 2 * kFloatVec;
+  constexpr int64_t kBlockD = 64;
+  const int64_t state_len = width - 1;
+  const int64_t num_d_blocks = div_up(dim, kBlockD);
+
+  auto store_2fvec = [](scalar_t* ptr, const fVec& v0, const fVec& v1) {
+    if constexpr (std::is_same_v<scalar_t, float>) {
+      v0.store(ptr);
+      v1.store(ptr + kFloatVec);
+    } else {
+      convert_from_float_ext<scalar_t>(v0, v1).store(ptr);
+    }
+  };
+
+  at::parallel_for(0, batch * num_d_blocks, 0, [&](int64_t begin, int64_t end) {
+    int64_t bs{0}, nb{0};
+    data_index_init(begin, bs, batch, nb, num_d_blocks);
+    for (int64_t work = begin; work < end; ++work) {
+      const int64_t start = query_start_loc[bs];
+      const int64_t seqlen = query_start_loc[bs + 1] - start;
+      const int64_t slot = cache_indices[bs];
+      const int64_t d0 = nb * kBlockD;
+      const int64_t d1 = std::min(dim, d0 + kBlockD);
+
+      if (seqlen > 0) {
+        if (slot < 0) {
+          for (int64_t t = 0; t < seqlen; ++t) {
+            std::memset(out + (start + t) * dim + d0, 0, (d1 - d0) * sizeof(scalar_t));
+          }
+        } else {
+          const bool use_prefix = has_initial_state[bs];
+          float* __restrict__ hist = state_scratch + bs * state_len * dim;
+          const scalar_t* __restrict__ slot_base = conv_states + slot * cs_s0;
+
+          // Stage initial state slice [state_len, d0:d1) in contiguous FP32 scratch
+          for (int64_t tap = 0; tap < state_len; ++tap) {
+            float* __restrict__ h_row = hist + tap * dim;
+            if (use_prefix) {
+              for (int64_t d = d0; d < d1; ++d) {
+                h_row[d] = static_cast<float>(slot_base[d * cs_s1 + tap * cs_s2]);
+              }
+            } else {
+              std::memset(h_row + d0, 0, (d1 - d0) * sizeof(float));
+            }
+          }
+
+          for (int64_t t = 0; t < seqlen; ++t) {
+            scalar_t* __restrict__ out_row = out + (start + t) * dim;
+            int64_t d = d0;
+            for (; d <= d1 - kDualVec; d += kDualVec) {
+              fVec acc0 = bias_f ? fVec::loadu(bias_f + d) : fVec(0.f);
+              fVec acc1 = bias_f ? fVec::loadu(bias_f + d + kFloatVec) : fVec(0.f);
+              for (int64_t tap = 0; tap < width; ++tap) {
+                const int64_t src_t = t - state_len + tap;
+                fVec v0, v1;
+                if (src_t < 0) {
+                  const float* __restrict__ h_ptr = hist + (src_t + state_len) * dim + d;
+                  v0 = fVec::loadu(h_ptr);
+                  v1 = fVec::loadu(h_ptr + kFloatVec);
+                } else {
+                  std::tie(v0, v1) = load_float_vec2(x + (start + src_t) * x_s0 + d);
+                }
+                const float* __restrict__ w_ptr = w_t + tap * dim + d;
+                acc0 = at::vec::fmadd(v0, fVec::loadu(w_ptr), acc0);
+                acc1 = at::vec::fmadd(v1, fVec::loadu(w_ptr + kFloatVec), acc1);
+              }
+              store_2fvec(out_row + d, acc0, acc1);
+            }
+            for (; d < d1; ++d) {
+              float acc = bias_f ? bias_f[d] : 0.f;
+              for (int64_t tap = 0; tap < width; ++tap) {
+                const int64_t src_t = t - state_len + tap;
+                float val = (src_t < 0) ? hist[(src_t + state_len) * dim + d]
+                                        : static_cast<float>(x[(start + src_t) * x_s0 + d]);
+                acc += val * w_t[tap * dim + d];
+              }
+              out_row[d] = static_cast<scalar_t>(acc);
+            }
+          }
+
+          // Update conv_states[slot, d0:d1, 0:state_len) in place
+          scalar_t* __restrict__ slot_mut = conv_states + slot * cs_s0;
+          for (int64_t tap = 0; tap < state_len; ++tap) {
+            const int64_t src_t = seqlen - state_len + tap;
+            if (src_t < 0) {
+              const float* __restrict__ h_row = hist + (src_t + state_len) * dim;
+              for (int64_t d = d0; d < d1; ++d) {
+                slot_mut[d * cs_s1 + tap * cs_s2] = static_cast<scalar_t>(h_row[d]);
+              }
+            } else {
+              const scalar_t* __restrict__ x_row = x + (start + src_t) * x_s0;
+              for (int64_t d = d0; d < d1; ++d) {
+                slot_mut[d * cs_s1 + tap * cs_s2] = x_row[d];
+              }
+            }
+          }
+        }
+      }
+      data_index_step(bs, batch, nb, num_d_blocks);
+    }
+  });
+}
+
+}  // anonymous namespace
+
+at::Tensor short_conv1d_cpu(
+    const at::Tensor& x,
+    const at::Tensor& weight,
+    const std::optional<at::Tensor>& bias,
+    at::Tensor& conv_states,
+    const at::Tensor& cache_indices,
+    const at::Tensor& has_initial_state,
+    const at::Tensor& query_start_loc) {
+  TORCH_CHECK(x.device().is_cpu() && weight.device().is_cpu() && conv_states.device().is_cpu(), "Expected CPU tensors");
+  CHECK_DIM(2, x);
+  CHECK_DIM(2, weight);
+  CHECK_DIM(3, conv_states);
+  CHECK_DIM(1, cache_indices);
+  CHECK_DIM(1, has_initial_state);
+  CHECK_DIM(1, query_start_loc);
+
+  const int64_t total_tokens = x.size(0);
+  const int64_t dim = x.size(1);
+  const int64_t width = weight.size(1);
+  const int64_t batch = cache_indices.size(0);
+  TORCH_CHECK(width >= 2, "short_conv1d_cpu requires kernel width >= 2, got ", width);
+  CHECK_EQ(weight.size(0), dim);
+  CHECK_EQ(conv_states.size(1), dim);
+  CHECK_EQ(conv_states.size(2), width - 1);
+  CHECK_EQ(has_initial_state.size(0), batch);
+  CHECK_EQ(query_start_loc.size(0), batch + 1);
+  CHECK_EQ(has_initial_state.scalar_type(), at::kBool);
+
+  const auto st = x.scalar_type();
+  TORCH_CHECK(
+      st == at::kFloat || st == at::kHalf || st == at::kBFloat16,
+      "short_conv1d_cpu supports float32, float16, and bfloat16");
+  CHECK_EQ(weight.scalar_type(), st);
+
+  at::Tensor out = at::empty({total_tokens, dim}, x.options());
+  if (total_tokens == 0 || batch == 0 || dim == 0) {
+    return out;
+  }
+
+  at::Tensor x_c = x.stride(1) == 1 ? x : x.contiguous();
+  at::Tensor w_t = weight.transpose(0, 1).to(at::kFloat).contiguous();
+  at::Tensor bias_f;
+  const float* bias_ptr = nullptr;
+  if (bias.has_value()) {
+    CHECK_DIM(1, bias.value());
+    CHECK_EQ(bias.value().size(0), dim);
+    bias_f = bias.value().to(at::kFloat).contiguous();
+    bias_ptr = bias_f.data_ptr<float>();
+  }
+
+  at::Tensor indices_i64 = cache_indices.to(at::kLong).contiguous();
+  at::Tensor qsl_i64 = query_start_loc.to(at::kLong).contiguous();
+  at::Tensor has_init_c = has_initial_state.contiguous();
+  const int64_t* idx_ptr = indices_i64.data_ptr<int64_t>();
+  const int64_t* qsl_ptr = qsl_i64.data_ptr<int64_t>();
+  TORCH_CHECK(qsl_ptr[batch] == total_tokens, "short_conv1d_cpu: query_start_loc[-1] must match token count");
+  for (int64_t b = 0; b < batch; ++b) {
+    TORCH_CHECK(qsl_ptr[b + 1] >= qsl_ptr[b], "short_conv1d_cpu: negative sequence length");
+    TORCH_CHECK(idx_ptr[b] == -1 || (idx_ptr[b] >= 0 && idx_ptr[b] < conv_states.size(0)), "Invalid cache slot");
+  }
+
+  // Handle mismatched conv_states dtype cleanly if needed (e.g., LFM3 extra_buffer state dtype)
+  const bool same_state_dtype = conv_states.scalar_type() == st;
+  at::Tensor cs_work = same_state_dtype ? conv_states : conv_states.to(st);
+  at::Tensor state_scratch = at::empty({batch, width - 1, dim}, x.options().dtype(at::kFloat));
+
+  AT_DISPATCH_REDUCED_FLOATING_TYPES_AND(at::kFloat, st, "short_conv1d_cpu", [&] {
+    short_conv1d_kernel_impl<scalar_t>(
+        out.data_ptr<scalar_t>(),
+        x_c.data_ptr<scalar_t>(),
+        x_c.stride(0),
+        w_t.data_ptr<float>(),
+        bias_ptr,
+        cs_work.data_ptr<scalar_t>(),
+        cs_work.stride(0),
+        cs_work.stride(1),
+        cs_work.stride(2),
+        idx_ptr,
+        has_init_c.data_ptr<bool>(),
+        qsl_ptr,
+        state_scratch.data_ptr<float>(),
+        batch,
+        dim,
+        width);
+  });
+
+  if (!same_state_dtype) {
+    conv_states.copy_(cs_work);
+  }
+  return out;
+}

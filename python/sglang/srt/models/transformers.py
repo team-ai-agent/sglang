@@ -319,8 +319,10 @@ def sglang_flash_attention_forward(
         self_attn.scaling = float(scaling)
     hidden = query.shape[-2]
     query, key, value = (x.transpose(1, 2) for x in (query, key, value))
+    output_shape = query.shape
     query, key, value = (x.reshape(hidden, -1) for x in (query, key, value))
-    return self_attn.forward(query, key, value, forward_batch=forward_batch), None
+    output = self_attn.forward(query, key, value, forward_batch=forward_batch)
+    return output.reshape(output_shape), None
 
 
 ALL_ATTENTION_FUNCTIONS["sglang"] = sglang_flash_attention_forward
