@@ -57,11 +57,13 @@ struct NormParams {
 };
 
 enum class NormMode {
-  L2Norm,        // y = x / sqrt(mean(x^2) + eps)
-  RMSNorm,       // y = x * weight / sqrt(mean(x^2) + eps)
-  GemmaNorm,     // y = x * (weight + scale_shift) / sqrt(mean(x^2) + eps)
-  LayerNorm,     // y = (x - mean(x)) * weight / sqrt(var(x) + eps) + bias
-  RMSNormGated,  // y = x * weight / sqrt(mean(x^2) + eps) * SiLU(gate)
+  L2Norm,                       // y = x / sqrt(mean(x^2) + eps)
+  RMSNorm,                      // y = x * weight / sqrt(mean(x^2) + eps)
+  GemmaNorm,                    // y = x * (weight + scale_shift) / sqrt(mean(x^2) + eps)
+  LayerNorm,                    // y = (x - mean(x)) * weight / sqrt(var(x) + eps) + bias
+  RMSNormGated,                 // y = x * weight / sqrt(mean(x^2) + eps) * SiLU(gate)
+  RMSNormSigmoidGated,          // y = x * weight / sqrt(mean(x^2) + eps) * Sigmoid(gate)
+  RMSNormSigmoidGatedNoWeight,  // y = x / sqrt(mean(x^2) + eps) * Sigmoid(gate)
 };
 
 struct NormTraitsBase {
@@ -147,6 +149,33 @@ struct NormTraits<NormMode::RMSNormGated> : NormTraitsBase {
   }
 #endif
 };
+
+template <bool HasWeight>
+struct SigmoidGatedNormTraits : NormTraitsBase {
+  static constexpr bool has_weight = HasWeight;
+  static constexpr bool has_gate = true;
+
+  static inline float apply_gate(float x, float gate) {
+    return x / (1.f + std::exp(-gate));
+  }
+  static inline at::vec::Vectorized<float> apply_gate(at::vec::Vectorized<float> x, at::vec::Vectorized<float> gate) {
+    const auto one = at::vec::Vectorized<float>(1.f);
+    return x / (one + gate.neg().exp());
+  }
+#if defined(CPU_CAPABILITY_AVX512)
+  static inline __m512 apply_gate(__m512 x, __m512 gate) {
+    const auto one = at::vec::Vectorized<float>(1.f);
+    const auto denom = one + at::vec::Vectorized<float>(gate).neg().exp();
+    return _mm512_div_ps(x, __m512(denom));
+  }
+#endif
+};
+
+template <>
+struct NormTraits<NormMode::RMSNormSigmoidGated> : SigmoidGatedNormTraits<true> {};
+
+template <>
+struct NormTraits<NormMode::RMSNormSigmoidGatedNoWeight> : SigmoidGatedNormTraits<false> {};
 
 #if defined(CPU_CAPABILITY_AVX512)
 template <NormMode M, typename input_t, typename param_t, int D, bool has_bias>
@@ -840,6 +869,48 @@ at::Tensor fused_rmsnorm_gated_cpu(at::Tensor& input, at::Tensor& weight, at::Te
     norm4d_kernel_impl<NormMode::RMSNormGated, scalar_t>(
         output.data_ptr<scalar_t>(), input.data_ptr<scalar_t>(), p, gate.data_ptr<scalar_t>());
   });
+  return output;
+}
+
+at::Tensor fused_rmsnorm_sigmoid_gated_cpu(
+    const at::Tensor& input, const std::optional<at::Tensor>& weight, const at::Tensor& gate, double eps) {
+  TORCH_CHECK(input.device().is_cpu() && gate.device().is_cpu(), "Expected CPU tensors");
+  const int64_t ndim = input.dim();
+  TORCH_CHECK(ndim >= 2 && ndim <= 4, "Expected a 2D/3D/4D tensor, got ", ndim, "D.");
+  const int64_t hidden_size = input.size(-1);
+  TORCH_CHECK(
+      gate.size(-1) == hidden_size && gate.numel() == input.numel(),
+      "Gate shape must match input features and element count");
+
+  const auto st = input.scalar_type();
+  TORCH_CHECK(
+      st == at::kHalf || st == at::kBFloat16 || st == at::kFloat,
+      "Expected input dtype to be float16, bfloat16, or float32, got ",
+      st);
+
+  at::Tensor x_in = input.stride(-1) == 1 ? input : input.contiguous();
+  at::Tensor gate_in =
+      (gate.scalar_type() == st ? gate : gate.to(st)).reshape(x_in.sizes()).contiguous();
+
+  NormParams p{x_in, static_cast<float>(eps)};
+  at::Tensor output = at::empty(x_in.sizes(), x_in.options());
+  if (x_in.numel() == 0) {
+    return output;
+  }
+
+  if (weight.has_value()) {
+    CHECK_NORM_PARAMETER(weight.value(), hidden_size);
+    p.weight = weight.value().data_ptr();
+    CPU_DISPATCH_FLOATING_TYPES_EXT(st, weight.value().scalar_type(), "fused_rmsnorm_sigmoid_gated_kernel", [&] {
+      norm4d_kernel_impl<NormMode::RMSNormSigmoidGated, scalar_t, param_t>(
+          output.data_ptr<scalar_t>(), x_in.data_ptr<scalar_t>(), p, gate_in.data_ptr<scalar_t>());
+    });
+  } else {
+    CPU_DISPATCH_FLOATING_TYPES_EXT(st, st, "fused_rmsnorm_sigmoid_gated_noweight_kernel", [&] {
+      norm4d_kernel_impl<NormMode::RMSNormSigmoidGatedNoWeight, scalar_t, param_t>(
+          output.data_ptr<scalar_t>(), x_in.data_ptr<scalar_t>(), p, gate_in.data_ptr<scalar_t>());
+    });
+  }
   return output;
 }
 

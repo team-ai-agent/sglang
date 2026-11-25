@@ -42,7 +42,7 @@ from sglang.srt.models.deepseek_common.deepseek_weight_loader import (
 )
 from sglang.srt.models.qwen3_next import Qwen3GatedDeltaNet
 from sglang.srt.runtime_context import get_parallel
-from sglang.srt.utils import BumpAllocator
+from sglang.srt.utils import BumpAllocator, is_cpu
 
 _GATED_NORM_LOW_RANK = 16
 
@@ -269,6 +269,10 @@ class GigaChat35AttentionMLA(deepseek_v2.DeepseekV2AttentionMLA):
             prefix=prefix,
             alt_stream=alt_stream,
         )
+
+        if is_cpu():
+            # Gated MLA uses the unfused path, which needs unpacked absorb weights.
+            self.quant_method = None
 
         self._norm_type = getattr(config, "norm_type", "LlamaRMSNorm")
         use_scaling = bool(getattr(config, "use_mla_scaling_factor", False))

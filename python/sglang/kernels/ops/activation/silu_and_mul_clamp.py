@@ -3,6 +3,7 @@
 from typing import Optional
 
 import torch
+import torch.nn.functional as F
 
 from sglang.kernels.jit.utils import (
     cache_once,
@@ -59,7 +60,28 @@ def silu_and_mul_clamp(
     output: torch.Tensor,
     swiglu_limit: float,
 ) -> None:
-    if _is_xpu:
+    if input.device.type == "cpu":
+        assert input.ndim == output.ndim == 2, "Input and output must be 2D"
+        assert input.shape == (output.shape[0], 2 * output.shape[1]), (
+            "Input last dimension must be twice the output last dimension"
+        )
+        assert output.device == input.device, "Input and output devices must match"
+        assert (
+            input.dtype in (torch.float16, torch.bfloat16)
+            and output.dtype == input.dtype
+        ), "CPU clamped SwiGLU requires matching FP16/BF16 input and output"
+        if hasattr(torch.ops.sgl_kernel, "silu_and_mul_clamp_cpu"):
+            torch.ops.sgl_kernel.silu_and_mul_clamp_cpu(
+                input, output, float(swiglu_limit)
+            )
+            return
+        # Pass-1 PyTorch fallback matching CUDA BF16 clamp order.
+        gate, up = input.to(torch.bfloat16).chunk(2, dim=-1)
+        output.copy_(
+            F.silu(gate.clamp(max=swiglu_limit).float())
+            * up.clamp(-swiglu_limit, swiglu_limit).float()
+        )
+    elif _is_xpu:
         from sgl_kernel import silu_and_mul_clamp
 
         silu_and_mul_clamp(input, output, float(swiglu_limit))

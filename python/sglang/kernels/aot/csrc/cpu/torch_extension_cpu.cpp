@@ -29,6 +29,7 @@ at::Tensor gelu_and_mul_cpu(const at::Tensor& input);
 
 // fused_sigmoid_mul
 void fused_sigmoid_mul_cpu(at::Tensor& input, const at::Tensor& gate);
+void silu_and_mul_clamp_cpu(const at::Tensor& input, at::Tensor& output, double swiglu_limit);
 
 // l2norm
 at::Tensor l2norm_cpu(at::Tensor& input, double eps);
@@ -71,6 +72,8 @@ std::tuple<at::Tensor, at::Tensor> fused_scale_residual_norm_scale_shift_cpu(
 
 // qwen3_next_rmsnorm_gated
 at::Tensor fused_rmsnorm_gated_cpu(at::Tensor& input, at::Tensor& weight, at::Tensor& gate, double eps);
+at::Tensor fused_rmsnorm_sigmoid_gated_cpu(
+    const at::Tensor& input, const std::optional<at::Tensor>& weight, const at::Tensor& gate, double eps);
 
 // fused_add_rmsnorm
 void fused_add_rmsnorm_cpu(at::Tensor& input, at::Tensor& residual, at::Tensor& weight, double eps);
@@ -661,6 +664,8 @@ TORCH_LIBRARY_FRAGMENT(sgl_kernel, m) {
   m.impl("gelu_and_mul_cpu", torch::kCPU, &gelu_and_mul_cpu);
   m.def("fused_sigmoid_mul_cpu(Tensor(a!) input, Tensor gate) -> ()");
   m.impl("fused_sigmoid_mul_cpu", torch::kCPU, &fused_sigmoid_mul_cpu);
+  m.def("silu_and_mul_clamp_cpu(Tensor input, Tensor(a!) output, float swiglu_limit) -> ()");
+  m.impl("silu_and_mul_clamp_cpu", torch::kCPU, &silu_and_mul_clamp_cpu);
 
   // norm
   m.def("rmsnorm_cpu(Tensor input, Tensor weight, float eps) -> Tensor");
@@ -677,6 +682,8 @@ TORCH_LIBRARY_FRAGMENT(sgl_kernel, m) {
   m.impl("l2norm_cpu", torch::kCPU, &l2norm_cpu);
   m.def("fused_rmsnorm_gated_cpu(Tensor input, Tensor weight, Tensor gate, float eps) -> Tensor");
   m.impl("fused_rmsnorm_gated_cpu", torch::kCPU, &fused_rmsnorm_gated_cpu);
+  m.def("fused_rmsnorm_sigmoid_gated_cpu(Tensor input, Tensor? weight, Tensor gate, float eps) -> Tensor");
+  m.impl("fused_rmsnorm_sigmoid_gated_cpu", torch::kCPU, &fused_rmsnorm_sigmoid_gated_cpu);
   m.def("fused_add_rmsnorm_cpu(Tensor(a!) input, Tensor(a!) residual, Tensor weight, float eps) -> ()");
   m.impl("fused_add_rmsnorm_cpu", torch::kCPU, &fused_add_rmsnorm_cpu);
   m.def("gemma_fused_add_rmsnorm_cpu(Tensor(a!) input, Tensor(a!) residual, Tensor weight, float eps) -> ()");
