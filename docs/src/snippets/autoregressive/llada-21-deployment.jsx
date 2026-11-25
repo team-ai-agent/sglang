@@ -12,7 +12,8 @@ export const LLaDA21Deployment = () => {
         { id: 'b300', label: 'B300', default: false },
         { id: 'mi300x', label: 'MI300X', default: false },
         { id: 'mi325x', label: 'MI325X', default: false },
-        { id: 'mi355x', label: 'MI355X', default: false }
+        { id: 'mi355x', label: 'MI355X', default: false },
+        { id: 'xeon', label: 'XEON', default: false }
       ]
     },
     modelsize: {
@@ -32,7 +33,9 @@ export const LLaDA21Deployment = () => {
     const modelPath = `${modelFamily}/${modelName}`;
 
     let tpSize;
-    if (modelsize === 'mini') {
+    if (hardware === 'xeon') {
+      tpSize = 6;
+    } else if (modelsize === 'mini') {
       tpSize = 1;
     } else {
       if (hardware === 'b200' || hardware === 'b300') {
@@ -44,12 +47,20 @@ export const LLaDA21Deployment = () => {
 
     const args = [];
     args.push(`--model-path ${modelPath}`);
+    if (hardware === 'xeon') {
+      args.push(`--device cpu`);
+      args.push(`--disable-overlap-schedule`);
+    }
     args.push(`--dllm-algorithm JointThreshold`);
     args.push(`--tp ${tpSize}`);
     args.push(`--trust-remote-code`);
     args.push(`--mem-fraction-static 0.8`);
     args.push(`--max-running-requests 1`);
-    if (hardware === 'h100' || hardware === 'h200' || hardware === 'b200' || hardware === 'b300') {
+    if (hardware === 'xeon') {
+      args.push(`--disable-decode-cuda-graph`);
+      args.push(`--disable-prefill-cuda-graph`);
+      args.push(`--attention-backend intel_amx`);
+    } else if (hardware === 'h100' || hardware === 'h200' || hardware === 'b200' || hardware === 'b300') {
       args.push(`--attention-backend flashinfer`);
     }
 
