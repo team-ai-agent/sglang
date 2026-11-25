@@ -278,14 +278,19 @@ except ImportError:
 
 
 try:
-    from transformers import Gemma4Config as _HFGemma4Config
+    from transformers import Gemma4UnifiedConfig as _HFGemma4UnifiedConfig
 
-    class _Gemma4UnifiedConfigAlias(_HFGemma4Config):
-        model_type = "gemma4_unified"
-
-    _CONFIG_REGISTRY["gemma4_unified"] = _Gemma4UnifiedConfigAlias
+    _CONFIG_REGISTRY["gemma4_unified"] = _HFGemma4UnifiedConfig
 except ImportError:
-    pass
+    try:
+        from transformers import Gemma4Config as _HFGemma4Config
+
+        class _Gemma4UnifiedConfigAlias(_HFGemma4Config):
+            model_type = "gemma4_unified"
+
+        _CONFIG_REGISTRY["gemma4_unified"] = _Gemma4UnifiedConfigAlias
+    except ImportError:
+        pass
 
 # Bare register: `get_config` re-parses every registry entry through its own
 # class, so AutoConfig need not resolve to it.
