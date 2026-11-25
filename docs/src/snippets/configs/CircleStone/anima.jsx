@@ -1,9 +1,10 @@
 export const config = {
   modelName: "Anima Base v1.0",
-  supportedHardware: ["rtx5090", "dgx-spark", "h200"],
+  supportedHardware: ["rtx5090", "dgx-spark", "h200", "xeon"],
   hardware: [
     { id: "rtx5090", label: "RTX 5090", vram: "32GB", vendor: "consumer" },
     { id: "dgx-spark", label: "DGX Spark", vram: "128GB unified", vendor: "blackwell" },
+    { id: "xeon", label: "XEON", vram: "CPU", vendor: "cpu" },
   ],
   groupHardware: false,
   matchDims: [],
@@ -22,8 +23,8 @@ export const config = {
       description: "Keep the pipeline resident when it fits. Use offload for a smaller memory budget.",
       learnMore: "#4-runtime-features",
       options: [
-        { id: "resident", label: "Resident", flags: ["--performance-mode speed"], recommended: true },
-        { id: "offload", label: "Layerwise offload", flags: ["--performance-mode memory", "--dit-layerwise-offload true"], soft: true, softReason: "This exact HTTP recipe is unverified." },
+        { id: "resident", label: "Resident", flags: (s) => s.hw === "xeon" ? [] : ["--performance-mode speed"], recommended: true },
+        { id: "offload", label: "Layerwise offload", flags: ["--performance-mode memory", "--dit-layerwise-offload true"], disabled: (s) => s.hw === "xeon", disableReason: "Layerwise GPU offload does not apply on Intel Xeon CPUs.", soft: true, softReason: "This exact HTTP recipe is unverified." },
       ],
     },
     {
@@ -31,7 +32,7 @@ export const config = {
       description: "Compile for repeated requests. Eager avoids compilation at startup and for new shapes.",
       learnMore: "#5-measured-tuning",
       options: [
-        { id: "compile", label: "Compiled", flags: ["--enable-torch-compile true"], recommended: true },
+        { id: "compile", label: "Compiled", flags: ["--enable-torch-compile true"], disabled: (s) => s.hw === "xeon", disableReason: "Select Eager execution on Intel Xeon CPUs.", recommended: true },
         { id: "eager", label: "Eager", flags: [] },
       ],
     },
@@ -39,10 +40,11 @@ export const config = {
       id: "attention", title: "Attention", scope: "serve", default: "platform",
       description: "Exact attention backends can differ in floating-point reduction order.",
       options: [
-        { id: "platform", label: "Platform default", flags: (s) => [`--attention-backend ${s.hw === "h200" ? "fa" : s.hw === "rtx5090" ? "torch_cudnn_sdpa" : "torch_sdpa"}`], recommended: true },
-        { id: "fa", label: "FlashAttention", flags: ["--attention-backend fa"], soft: (s) => s.hw !== "h200", softReason: "On RTX 5090 and Spark, this selector falls back to Torch SDPA. Select Torch SDPA explicitly." },
+        { id: "platform", label: "Platform default", flags: (s) => [`--attention-backend ${s.hw === "h200" ? "fa" : s.hw === "rtx5090" ? "torch_cudnn_sdpa" : s.hw === "xeon" ? "amx_attn" : "torch_sdpa"}`], recommended: true },
+        { id: "amx", label: "AMX Attention", flags: ["--attention-backend amx_attn"], showWhen: (s) => s.hw === "xeon" },
+        { id: "fa", label: "FlashAttention", flags: ["--attention-backend fa"], soft: (s) => s.hw !== "h200", softReason: "On RTX 5090, Spark, and Xeon, this selector falls back to another backend." },
         { id: "sdpa", label: "Torch SDPA", flags: ["--attention-backend torch_sdpa"] },
-        { id: "cudnn", label: "cuDNN SDPA", flags: ["--attention-backend torch_cudnn_sdpa"] },
+        { id: "cudnn", label: "cuDNN SDPA", flags: ["--attention-backend torch_cudnn_sdpa"], disabled: (s) => s.hw === "xeon", disableReason: "cuDNN SDPA requires an NVIDIA GPU." },
       ],
     },
     {
@@ -52,7 +54,7 @@ export const config = {
       options: [
         { id: "auto", label: "Auto", flags: [] },
         { id: "off", label: "Off", flags: [] },
-        { id: "on", label: "On", flags: [], disabled: (s) => Number(s.gpus_per_node) % 2 !== 0, disableReason: "CFG parallelism requires an even number of GPUs and guidance greater than 1." },
+        { id: "on", label: "On", flags: [], disabled: (s) => s.hw === "xeon" || Number(s.gpus_per_node) % 2 !== 0, disableReason: "CFG parallelism requires an even number of GPUs and guidance greater than 1." },
       ],
     },
     {
@@ -73,12 +75,13 @@ export const config = {
   commandBuilder: {
     defaultSelection: { hw: "rtx5090", nodes: 1, gpus_per_node: 1, topology_mode: "auto", tp_size: 1, ulysses_degree: 1, ring_degree: 1 },
     resource: {
-      limits: { nodes: { min: 1, max: 1 }, gpus_per_node: { min: 1, max: 8 } },
+      limits: { nodes: { min: 1, max: 1 }, gpus_per_node: { min: 1, max: 8, disabledWhen: (s) => s.hw === "xeon", disabledValue: 1 } },
       verifiedRecipes: [
         { id: "rtx5090-1gpu-resident-cudnn", hw: "rtx5090", nodes: 1, gpus_per_node: 1, tp_size: 1, ulysses_degree: 1, ring_degree: 1, placement: "resident", attention: "cudnn", execution: "compile", cfg: "auto", vae: "auto" },
         { id: "dgx-spark-1gpu-resident-sdpa", hw: "dgx-spark", nodes: 1, gpus_per_node: 1, tp_size: 1, ulysses_degree: 1, ring_degree: 1, placement: "resident", attention: "sdpa", execution: "compile", cfg: "auto", vae: "auto" },
         { id: "h200-1gpu-resident-fa", hw: "h200", nodes: 1, gpus_per_node: 1, tp_size: 1, ulysses_degree: 1, ring_degree: 1, placement: "resident", attention: "fa", execution: "compile", cfg: "auto", vae: "auto" },
         { id: "h200-2gpu-resident-cfg", hw: "h200", nodes: 1, gpus_per_node: 2, tp_size: 1, ulysses_degree: 1, ring_degree: 1, placement: "resident", attention: "fa", execution: "compile", cfg: "auto", vae: "auto" },
+        { id: "xeon-1cpu-resident-amx", hw: "xeon", nodes: 1, gpus_per_node: 1, tp_size: 1, ulysses_degree: 1, ring_degree: 1, placement: "resident", attention: "platform", execution: "eager", cfg: "auto", vae: "auto" },
       ],
       cfgDegree: (s) => s.cfg === "on" || (s.cfg === "auto" && s.topology_mode !== "manual" && s.hw === "h200" && Number(s.gpus_per_node) === 2) ? 2 : 1,
       vaeTiling: (s) => s.vae === "tiled" || (s.vae === "auto" && (s.hw !== "h200" || s.execution !== "compile")),
@@ -87,16 +90,17 @@ export const config = {
         const errors = [];
         if (Number(s.nodes) !== 1) errors.push("This picker covers single-node deployment only.");
         if (s.hw === "dgx-spark" && Number(s.gpus_per_node) !== 1) errors.push("DGX Spark has one GPU per node.");
+        if (s.hw === "xeon" && Number(s.gpus_per_node) !== 1) errors.push("Xeon CPU uses one host worker in this recipe.");
         const cfg = config.commandBuilder.resource.cfgDegree(s);
         if (!Number.isInteger(t.tp_size) || t.tp_size < 1 || Number(s.nodes) * Number(s.gpus_per_node) !== cfg * t.tp_size * t.ulysses_degree * t.ring_degree) errors.push("GPU count must equal CFG * TP * Ulysses * Ring.");
         if (16 % (t.tp_size * t.ulysses_degree)) errors.push("TP * Ulysses must divide Anima's 16 attention heads.");
-        if (t.ring_degree > 1 && (s.hw !== "h200" || ["sdpa", "cudnn"].includes(s.attention))) errors.push("Ring requires FlashAttention.");
+        if (t.ring_degree > 1 && (s.hw !== "h200" || ["sdpa", "cudnn", "amx"].includes(s.attention))) errors.push("Ring requires FlashAttention.");
         return errors;
       },
     },
     resolveDeployment: (s) => {
       const r = config.commandBuilder.resource;
-      const attention = s.attention === "platform" ? (s.hw === "h200" ? "fa" : s.hw === "rtx5090" ? "cudnn" : "sdpa") : s.attention;
+      const attention = s.attention === "platform" ? (s.hw === "h200" ? "fa" : s.hw === "rtx5090" ? "cudnn" : s.hw === "xeon" ? "amx" : "sdpa") : s.attention;
       const t = s.topology_mode === "manual"
         ? { tp_size: Number(s.tp_size), ulysses_degree: Number(s.ulysses_degree), ring_degree: Number(s.ring_degree) }
         : r.autoTopology(s);
@@ -105,11 +109,13 @@ export const config = {
       const tiled = r.vaeTiling(s);
       const world = Number(s.nodes) * Number(s.gpus_per_node);
       const recipe = r.verifiedRecipes.find((v) => v.hw === s.hw && v.gpus_per_node === Number(s.gpus_per_node) && v.tp_size === t.tp_size && v.ulysses_degree === t.ulysses_degree && v.ring_degree === t.ring_degree && v.placement === s.placement && r.cfgDegree(v) === cfg);
-      const attentions = world > 1 ? ["fa"] : s.execution === "eager"
-        ? ["sdpa", "cudnn", ...(s.hw === "h200" ? ["fa"] : [])]
-        : s.hw === "rtx5090" ? ["sdpa", "cudnn"] : [s.hw === "h200" ? "fa" : "sdpa"];
-      const multiOutput = tiled && (s.execution === "compile" || attention === "fa" || (attention === "sdpa" && s.hw !== "h200"));
-      const vaeVerified = tiled || (s.execution === "compile" && attention === (s.hw === "h200" ? "fa" : "sdpa"));
+      const attentions = s.hw === "xeon"
+        ? (s.execution === "eager" ? ["amx", "sdpa"] : [])
+        : world > 1 ? ["fa"] : s.execution === "eager"
+          ? ["sdpa", "cudnn", ...(s.hw === "h200" ? ["fa"] : [])]
+          : s.hw === "rtx5090" ? ["sdpa", "cudnn"] : [s.hw === "h200" ? "fa" : "sdpa"];
+      const multiOutput = s.hw !== "xeon" && tiled && (s.execution === "compile" || attention === "fa" || (attention === "sdpa" && s.hw !== "h200"));
+      const vaeVerified = tiled || (s.hw !== "xeon" && s.execution === "compile" && attention === (s.hw === "h200" ? "fa" : "sdpa"));
       const verified = !!recipe && attentions.includes(attention) && vaeVerified && Number(s.outputs) <= (multiOutput ? 2 : 1) && errors.length === 0;
       const flags = ["--model-path {{MODEL_NAME}}"];
       if (world > 1) flags.push(`--num-gpus ${world}`, `--tp-size ${t.tp_size}`, `--ulysses-degree ${t.ulysses_degree}`, `--ring-degree ${t.ring_degree}`);
@@ -118,15 +124,17 @@ export const config = {
       flags.push("--host {{HOST_IP}}", "--port {{PORT}}");
       return {
         match: { hw: s.hw }, nnodes: Number(s.nodes), verified, flags,
+        env: s.hw === "xeon" ? ["SGLANG_DIFFUSION_PLATFORM_OVERRIDE=cpu"] : [],
         builder: {
           topology: t, topologySummary: `CFG ${cfg} / TP ${t.tp_size} / Ulysses ${t.ulysses_degree} / Ring ${t.ring_degree}`,
           errors, warnings: verified ? [] : ["This exact HTTP recipe has not been verified."],
           verification: { serve: verified ? "verified" : "unverified", request: verified ? "verified" : "unverified" },
-          resolvedSettings: { attention: s.attention === "platform" ? ({ fa: "FlashAttention", sdpa: "Torch SDPA", cudnn: "cuDNN SDPA" }[attention]) : undefined, cfg: cfg > 1 ? "2-way CFG" : "Off", vae: tiled ? "Tiled" : "Untiled" },
+          resolvedSettings: { attention: s.attention === "platform" ? ({ fa: "FlashAttention", sdpa: "Torch SDPA", cudnn: "cuDNN SDPA", amx: "AMX Attention" }[attention]) : undefined, cfg: cfg > 1 ? "2-way CFG" : "Off", vae: tiled ? "Tiled" : "Untiled" },
         },
       };
     },
   },
+  runModes: (s) => (s.hw === "xeon" ? ["python"] : ["python", "docker"]),
   modelNames: { default: "circlestone-labs/Anima-Base-v1.0-Diffusers" },
   placeholders: {
     HOST_IP: { target: "command", label: "Bind host", default: "0.0.0.0" },
