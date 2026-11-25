@@ -92,6 +92,7 @@ class SeparatorStyle(IntEnum):
     MPT = auto()
     PADDLE_OCR = auto()
     UNLIMITED_OCR = auto()
+    PADDLE_OCR_NEWLINE = auto()
 
 
 @dataclasses.dataclass
@@ -403,11 +404,18 @@ class Conversation:
                     ret += role + "\n"
 
             return ret
-        elif self.sep_style == SeparatorStyle.PADDLE_OCR:
+        elif self.sep_style in (
+            SeparatorStyle.PADDLE_OCR,
+            SeparatorStyle.PADDLE_OCR_NEWLINE,
+        ):
             ret = system_prompt
+            assistant_separator = (
+                ":\n" if self.sep_style == SeparatorStyle.PADDLE_OCR_NEWLINE else ": "
+            )
             for role, message in self.messages:
+                separator = ": " if role == self.roles[0] else assistant_separator
                 if message:
-                    ret += role + ": "
+                    ret += role + separator
                     if role == self.roles[0]:
                         if self.image_token in message:
                             ret += message.replace(
@@ -419,7 +427,7 @@ class Conversation:
                     else:
                         ret += message + self.sep
                 else:
-                    ret += role + ": "  # must be end with a space
+                    ret += role + separator
             return ret
         elif self.sep_style == SeparatorStyle.UNLIMITED_OCR:
             seps = [self.sep, self.sep2]
@@ -935,6 +943,19 @@ register_conv_template(
         sep="<|end_of_sentence|>",
         sep_style=SeparatorStyle.PADDLE_OCR,
         stop_str=["<|end_of_sentence|>"],
+        image_token="<|IMAGE_START|><|IMAGE_PLACEHOLDER|><|IMAGE_END|>",
+    )
+)
+
+register_conv_template(
+    Conversation(
+        name="paddle-ocr-newline",
+        system_message="",
+        system_template="<|begin_of_sentence|>{system_message}",
+        roles=("User", "Assistant"),
+        sep="</s>",
+        sep_style=SeparatorStyle.PADDLE_OCR_NEWLINE,
+        stop_str=["</s>"],
         image_token="<|IMAGE_START|><|IMAGE_PLACEHOLDER|><|IMAGE_END|>",
     )
 )

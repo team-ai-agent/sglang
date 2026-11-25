@@ -1,6 +1,8 @@
+import json
 import sys
 import tempfile
 import unittest
+from pathlib import Path
 from types import ModuleType, SimpleNamespace
 from unittest.mock import Mock, patch
 
@@ -29,6 +31,81 @@ class _DummyTokenizer:
 
     def get_vocab(self):
         return {token: i for i, token in enumerate(self._vocab)}
+
+
+class TestPaddleOCRTemplateSelection(CustomTestCase):
+    def _load(
+        self,
+        prefix=None,
+        *,
+        has_template=True,
+        explicit=None,
+        model_type="paddleocr_vl",
+        processor_template=None,
+    ):
+        from sglang.srt.parser.template_manager import TemplateManager
+
+        manager = TemplateManager()
+        tokenizer = _DummyTokenizer(
+            [], chat_template="tokenizer template" if has_template else None
+        )
+        tokenizer.apply_chat_template = Mock(return_value=prefix)
+        config = SimpleNamespace(model_type=model_type)
+        tokenizer_manager = SimpleNamespace(
+            tokenizer=tokenizer,
+            processor=SimpleNamespace(chat_template=processor_template),
+            model_config=SimpleNamespace(hf_config=config),
+        )
+        with tempfile.TemporaryDirectory() as path:
+            (Path(path) / "config.json").write_text(
+                json.dumps({"model_type": model_type})
+            )
+            manager.load_chat_template(tokenizer_manager, explicit, path)
+        return manager, tokenizer
+
+    def test_checkpoint_separator_wins_for_all_paddle_revisions(self):
+        for separator, name in ((" ", "paddle-ocr"), ("\n", "paddle-ocr-newline")):
+            with self.subTest(separator=repr(separator)):
+                manager, tokenizer = self._load("User: Q\nAssistant:" + separator)
+                self.assertEqual(manager.chat_template_name, name)
+                tokenizer.apply_chat_template.assert_called_once_with(
+                    [{"role": "user", "content": [{"type": "text", "text": "Q"}]}],
+                    chat_template="tokenizer template",
+                    tokenize=False,
+                    add_generation_prompt=True,
+                )
+
+    def test_missing_checkpoint_template_preserves_legacy_fallback(self):
+        manager, tokenizer = self._load(has_template=False)
+        self.assertEqual(manager.chat_template_name, "paddle-ocr")
+        tokenizer.apply_chat_template.assert_not_called()
+
+    def test_unknown_checkpoint_prefix_is_not_silently_misrendered(self):
+        with self.assertRaisesRegex(
+            ValueError, "Unrecognized PaddleOCR assistant prefix"
+        ):
+            self._load("Unknown assistant prefix")
+
+    def test_processor_template_takes_precedence_over_tokenizer_template(self):
+        manager, tokenizer = self._load(
+            "Assistant:\n", processor_template="processor template"
+        )
+        self.assertEqual(manager.chat_template_name, "paddle-ocr-newline")
+        self.assertEqual(
+            tokenizer.apply_chat_template.call_args.kwargs["chat_template"],
+            "processor template",
+        )
+        self.assertEqual(tokenizer.chat_template, "tokenizer template")
+
+    def test_explicit_legacy_template_remains_authoritative(self):
+        manager, tokenizer = self._load("Assistant:\n", explicit="paddle-ocr")
+        self.assertEqual(manager.chat_template_name, "paddle-ocr")
+        tokenizer.apply_chat_template.assert_not_called()
+
+    def test_other_builtins_do_not_switch_to_checkpoint_templates(self):
+        manager, tokenizer = self._load("Assistant:\n", model_type="deepseek-ocr")
+        self.assertEqual(manager.chat_template_name, "deepseek-ocr")
+        tokenizer.apply_chat_template.assert_not_called()
 
 
 def _patch_hf_transformers(get_tokenizer, get_config=None):
