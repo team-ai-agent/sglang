@@ -1,4 +1,5 @@
 import unittest
+from unittest.mock import patch
 
 import torch
 
@@ -7,6 +8,57 @@ from sglang.test.ci.ci_register import register_cpu_ci
 from sglang.test.test_utils import CustomTestCase
 
 register_cpu_ci(est_time=11, suite="base-a-test-cpu")
+
+
+class TestIQuestQ1HeadPrecision(CustomTestCase):
+    def test_requested_fp32_head_keeps_gpu_parameter_precision(self):
+        from sglang.srt.models import iquest_q1
+
+        for cpu in (True, False):
+            with self.subTest(cpu=cpu):
+                config = IQuestQ1Config(
+                    vocab_size=16, hidden_size=8, enable_lm_head_fp32=True
+                )
+                processor = torch.nn.Module()
+                processor.use_fp32_lm_head = True
+                with (
+                    patch.object(iquest_q1, "_is_cpu", cpu),
+                    patch.object(
+                        iquest_q1, "IQuestQ1Model", return_value=torch.nn.Module()
+                    ),
+                    patch.object(iquest_q1, "LogitsProcessor", return_value=processor),
+                    patch.object(
+                        iquest_q1, "ParallelLMHead", return_value=torch.nn.Module()
+                    ) as head,
+                ):
+                    iquest_q1.IQuestQ1ForCausalLM(config)
+                self.assertEqual(
+                    head.call_args.kwargs["params_dtype"],
+                    torch.float32 if cpu else None,
+                )
+
+    def test_tied_embedding_head_is_not_reallocated(self):
+        from sglang.srt.models import iquest_q1
+
+        config = IQuestQ1Config(
+            vocab_size=16,
+            hidden_size=8,
+            tie_word_embeddings=True,
+            enable_lm_head_fp32=True,
+        )
+        model = torch.nn.Module()
+        model.embed_tokens = torch.nn.Embedding(16, 8)
+        processor = torch.nn.Module()
+        processor.use_fp32_lm_head = True
+        with (
+            patch.object(iquest_q1, "_is_cpu", True),
+            patch.object(iquest_q1, "IQuestQ1Model", return_value=model),
+            patch.object(iquest_q1, "LogitsProcessor", return_value=processor),
+            patch.object(iquest_q1, "ParallelLMHead") as head,
+        ):
+            actual = iquest_q1.IQuestQ1ForCausalLM(config)
+        self.assertIs(actual.lm_head, model.embed_tokens)
+        head.assert_not_called()
 
 
 class TestIQuestQ1WeightLoading(CustomTestCase):
