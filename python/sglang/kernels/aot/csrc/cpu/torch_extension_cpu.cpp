@@ -46,6 +46,8 @@ layernorm_cpu(const at::Tensor& input, const at::Tensor& weight, const std::opti
 // fused_scale_shift
 at::Tensor
 fused_scale_shift_cpu(const at::Tensor& input, const at::Tensor& scale, const at::Tensor& shift, double scale_constant);
+at::Tensor
+fused_residual_gate_add_cpu(const at::Tensor& residual, const at::Tensor& update, const at::Tensor& gate);
 
 // fused_norm_scale_shift
 at::Tensor fused_norm_scale_shift_cpu(
@@ -559,6 +561,8 @@ void apply_rotary_pos_emb_cpu(
 
 // multidimensional rope
 void apply_multidimensional_rope_cpu(at::Tensor& query, at::Tensor& key, at::Tensor& cos, at::Tensor& sin);
+std::tuple<at::Tensor, at::Tensor> apply_interleaved_rope_cpu(
+    const at::Tensor& query, const at::Tensor& key, const at::Tensor& cos, const at::Tensor& sin);
 
 // mrope
 void multimodal_rotary_embedding_cpu(
@@ -716,6 +720,8 @@ TORCH_LIBRARY_FRAGMENT(sgl_kernel, m) {
   m.impl("fused_qk_gemma_rmsnorm_with_gate_cpu", torch::kCPU, &fused_qk_gemma_rmsnorm_with_gate_cpu);
   m.def("fused_scale_shift_cpu(Tensor input, Tensor scale, Tensor shift, float scale_constant) -> Tensor");
   m.impl("fused_scale_shift_cpu", torch::kCPU, &fused_scale_shift_cpu);
+  m.def("fused_residual_gate_add_cpu(Tensor residual, Tensor update, Tensor gate) -> Tensor");
+  m.impl("fused_residual_gate_add_cpu", torch::kCPU, &fused_residual_gate_add_cpu);
   m.def(
       "fused_norm_scale_shift_cpu("
       "Tensor input, "
@@ -1030,6 +1036,8 @@ TORCH_LIBRARY_FRAGMENT(sgl_kernel, m) {
   // multidimensional rope
   m.def("apply_multidimensional_rope_cpu(Tensor(a!) query, Tensor(b!) key, Tensor cos, Tensor sin) -> ()");
   m.impl("apply_multidimensional_rope_cpu", torch::kCPU, &apply_multidimensional_rope_cpu);
+  m.def("apply_interleaved_rope_cpu(Tensor query, Tensor key, Tensor cos, Tensor sin) -> (Tensor, Tensor)");
+  m.impl("apply_interleaved_rope_cpu", torch::kCPU, &apply_interleaved_rope_cpu);
 
   // multimodal rope
   m.def(

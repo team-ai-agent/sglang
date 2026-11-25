@@ -75,6 +75,27 @@ def sana_ln_modulate(
     global _SANA_LN_MOD_DISABLED
 
     if _SANA_LN_MOD_DISABLED or not _use_sana_bcg_fast_path(x, allow_eager=allow_eager):
+        if (
+            not torch.compiler.is_compiling()
+            and x.device.type == "cpu"
+            and x.dtype in (torch.float16, torch.bfloat16)
+            and x.dim() == 3
+            and scale.dim() == 3
+            and scale.shape[1] in (1, x.shape[1])
+            and shift.shape == scale.shape
+            and is_plain_layer_norm(norm, x.shape[-1])
+            and hasattr(torch.ops.sgl_kernel, "fused_norm_scale_shift_cpu")
+        ):
+            from sglang.kernels.ops.diffusion.modulate.scale_shift_triton import (
+                expand_scale_shift_cpu_param,
+            )
+
+            x_in = x if x.stride(-1) == 1 else x.contiguous()
+            scale_in = expand_scale_shift_cpu_param(scale.contiguous(), x_in)
+            shift_in = expand_scale_shift_cpu_param(shift.contiguous(), x_in)
+            return torch.ops.sgl_kernel.fused_norm_scale_shift_cpu(
+                x_in, None, None, scale_in, shift_in, "layer", norm.eps
+            )
         return _eager_ln_modulate(norm, x, scale, shift)
 
     capturing = torch.cuda.is_current_stream_capturing()

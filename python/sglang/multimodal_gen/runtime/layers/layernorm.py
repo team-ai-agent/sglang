@@ -1104,6 +1104,33 @@ def apply_qk_norm(
         )
         return q, k
 
+    if (
+        allow_inplace
+        and not torch.compiler.is_compiling()
+        and q.device.type == "cpu"
+        and k.device.type == "cpu"
+        and q_eps == k_eps
+        and q.dtype in (torch.float16, torch.bfloat16)
+        and k.dtype == q.dtype
+        and q_norm.weight.dtype == q.dtype
+        and k_norm.weight.dtype == k.dtype
+        and q.is_contiguous()
+        and k.is_contiguous()
+        and q.shape[:-2] == k.shape[:-2]
+        and q.shape[-1] == head_dim
+        and k.shape[-1] == head_dim
+        and hasattr(torch.ops.sgl_kernel, "fused_qk_norm_cpu")
+    ):
+        num_tokens = q.numel() // (q.shape[-2] * head_dim)
+        torch.ops.sgl_kernel.fused_qk_norm_cpu(
+            q.view(num_tokens, -1),
+            k.view(num_tokens, -1),
+            q_norm.weight,
+            k_norm.weight,
+            q_eps,
+        )
+        return q, k
+
     q_shape = q.shape
     k_shape = k.shape
     # reshape (not view) so a non-contiguous q/k (e.g. a chunked qkv view) is handled.

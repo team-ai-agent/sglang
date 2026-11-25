@@ -19,7 +19,10 @@ from sglang.kernels.ops.diffusion import (
 )
 from sglang.multimodal_gen.configs.models.dits.sana_video import SanaVideoConfig
 from sglang.multimodal_gen.runtime.layers.layernorm import RMSNorm
-from sglang.multimodal_gen.runtime.layers.linear import MergedColumnParallelLinear
+from sglang.multimodal_gen.runtime.layers.linear import (
+    MergedColumnParallelLinear,
+    apply_amx_packed_linear,
+)
 from sglang.multimodal_gen.runtime.layers.rotary_embedding.mrope import (
     get_1d_rotary_pos_embed,
 )
@@ -36,10 +39,60 @@ from sglang.multimodal_gen.runtime.models.dits.sana import (
 )
 from sglang.multimodal_gen.runtime.platforms import current_platform
 from sglang.multimodal_gen.runtime.utils.logging_utils import init_logger
+from sglang.srt.layers.amx_utils import dim_is_supported, dtype_is_supported
+from sglang.srt.utils import cpu_has_amx_support
 
 _is_cuda = current_platform.is_cuda()
+_has_cpu_amx = cpu_has_amx_support()
 
 logger = init_logger(__name__)
+
+
+def _maybe_amx_linear(layer: nn.Module, x: torch.Tensor) -> torch.Tensor | None:
+    if (
+        not _has_cpu_amx
+        or torch.compiler.is_compiling()
+        or x.device.type != "cpu"
+        or x.dtype not in (torch.bfloat16, torch.float16)
+        or type(layer) not in (nn.Linear, nn.Conv2d)
+    ):
+        return None
+    w = layer.weight
+    if w.device.type != "cpu" or w.dtype != x.dtype:
+        return None
+    if isinstance(layer, nn.Conv2d):
+        if (
+            layer.kernel_size != (1, 1)
+            or layer.stride != (1, 1)
+            or layer.padding != (0, 0)
+            or layer.dilation != (1, 1)
+            or layer.groups != 1
+        ):
+            return None
+        w_2d = w.squeeze(-1).squeeze(-1)
+    else:
+        w_2d = w
+    if not (
+        hasattr(torch.ops.sgl_kernel, "convert_weight_packed")
+        and dim_is_supported(w_2d)
+        and dtype_is_supported(w_2d)
+    ):
+        return None
+    bias = layer.bias
+    sig = (
+        w.data_ptr(),
+        w._version,
+        None if bias is None else (bias.data_ptr(), bias._version),
+    )
+    cached = getattr(layer, "_sgl_amx_cache", None)
+    if cached is None or cached[0] != sig:
+        w_packed = torch.ops.sgl_kernel.convert_weight_packed(w_2d.contiguous())
+        b_fp32 = None if bias is None else bias.detach().float().contiguous()
+        cached = (sig, w_packed, b_fp32)
+        layer._sgl_amx_cache = cached
+    return apply_amx_packed_linear(
+        x if x.is_contiguous() else x.contiguous(), cached[1], cached[2]
+    )
 
 _SANA_VIDEO_ROPE = BitExactFusionGate("SANA-Video fused RoPE")
 _SANA_VIDEO_DEPTHWISE_GLU = BitExactFusionGate(
@@ -82,6 +135,18 @@ def apply_interleaved_rotary_emb_pair(
             reference,
             equal=tensors_equal,
             logger=logger,
+        )
+    if (
+        not torch.compiler.is_compiling()
+        and query.device.type == "cpu"
+        and query.dim() == 4
+        and key.dim() == 4
+        and freqs_cos.dim() == 4
+        and freqs_sin.dim() == 4
+        and hasattr(torch.ops.sgl_kernel, "apply_interleaved_rope_cpu")
+    ):
+        return torch.ops.sgl_kernel.apply_interleaved_rope_cpu(
+            query, key, freqs_cos, freqs_sin
         )
     return reference()
 
@@ -239,6 +304,25 @@ class GLUMBTempConv(nn.Module):
 
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
         batch_size, num_frames, height, width, channels = hidden_states.shape
+        if hidden_states.device.type == "cpu" and not torch.compiler.is_compiling():
+            inv = _maybe_amx_linear(
+                self.conv_inverted,
+                hidden_states.reshape(batch_size * num_frames, height, width, channels),
+            )
+            if inv is not None:
+                hidden_states = F.silu(inv).permute(0, 3, 1, 2)
+                hidden_states = self._depthwise_glu(hidden_states)
+                pt = _maybe_amx_linear(
+                    self.conv_point, hidden_states.permute(0, 2, 3, 1)
+                )
+                if pt is not None:
+                    temporal = pt.reshape(
+                        batch_size, num_frames, height * width, channels
+                    ).permute(0, 3, 1, 2)
+                    hidden_states = temporal + self.conv_temp(temporal)
+                    return hidden_states.permute(0, 2, 3, 1).reshape(
+                        batch_size, num_frames, height, width, channels
+                    )
         hidden_states = hidden_states.reshape(
             batch_size * num_frames, height, width, channels
         ).permute(0, 3, 1, 2)
@@ -305,6 +389,23 @@ class SanaVideoLinearAttention(nn.Module):
             query, key, *rotary_emb
         )
 
+        if query.device.type == "cpu" and not torch.compiler.is_compiling():
+            query_nhd = query.transpose(1, 2)
+            key_sum = key.sum(dim=1).unsqueeze(-1)
+            normalizer = 1.0 / (query_nhd @ key_sum + 1e-15)
+            q_rot_f = query_rotate.transpose(1, 2).contiguous().float()
+            k_rot_f = key_rotate.transpose(1, 2).contiguous().float()
+            v_f = value.transpose(1, 2).contiguous().float()
+            scores = v_f.transpose(-1, -2) @ k_rot_f
+            hidden_states = (q_rot_f @ scores.transpose(-1, -2)) * normalizer
+            hidden_states = (
+                hidden_states.transpose(1, 2)
+                .reshape(batch_size, sequence_length, self.inner_dim)
+                .to(original_dtype)
+            )
+            amx_out = _maybe_amx_linear(self.to_out[0], hidden_states)
+            return amx_out if amx_out is not None else self.to_out[0](hidden_states)
+
         query = query.permute(0, 2, 3, 1)
         key = key.permute(0, 2, 3, 1)
         query_rotate = query_rotate.permute(0, 2, 3, 1)
@@ -360,7 +461,10 @@ class SanaVideoCrossAttention(nn.Module):
     ) -> torch.Tensor:
         batch_size, query_length, _ = hidden_states.shape
         key_length = encoder_hidden_states.shape[1]
-        query = self.norm_q(self.to_q(hidden_states))
+        q_proj = _maybe_amx_linear(self.to_q, hidden_states)
+        query = self.norm_q(
+            q_proj if q_proj is not None else self.to_q(hidden_states)
+        )
         key_value, _ = self.to_kv(encoder_hidden_states)
         key, value = key_value.split(self.inner_dim, dim=-1)
         key = self.norm_k(key)
@@ -390,7 +494,8 @@ class SanaVideoCrossAttention(nn.Module):
         hidden_states = hidden_states.transpose(1, 2).reshape(
             batch_size, query_length, self.inner_dim
         )
-        return self.to_out[0](hidden_states)
+        amx_out = _maybe_amx_linear(self.to_out[0], hidden_states)
+        return amx_out if amx_out is not None else self.to_out[0](hidden_states)
 
 
 class SanaVideoTransformerBlock(nn.Module):

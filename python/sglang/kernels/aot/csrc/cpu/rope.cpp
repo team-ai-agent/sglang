@@ -574,3 +574,174 @@ void multimodal_rotary_embedding_cpu(
     }
   });
 }
+
+namespace {
+
+template <typename scalar_t, typename cos_t>
+void apply_interleaved_rope_4d_kernel_impl(
+    scalar_t* __restrict__ q_out,
+    scalar_t* __restrict__ k_out,
+    const scalar_t* __restrict__ q_in,
+    const scalar_t* __restrict__ k_in,
+    const cos_t* __restrict__ cos_ptr,
+    const cos_t* __restrict__ sin_ptr,
+    const RopeParams& p,
+    int64_t cos_strideB,
+    int64_t cos_strideS,
+    int64_t cos_strideD,
+    int64_t sin_strideB,
+    int64_t sin_strideS,
+    int64_t sin_strideD) {
+  constexpr int64_t kMaxHalfDim = 256;
+  const int64_t half_size = p.head_size / 2;
+  TORCH_CHECK(half_size <= kMaxHalfDim, "head_dim must be <= ", 2 * kMaxHalfDim, ", got ", p.head_size);
+  at::parallel_for(0, p.rows(), 0, [&](int64_t begin, int64_t end) {
+    std::array<cos_t, kMaxHalfDim> cos_row;
+    std::array<cos_t, kMaxHalfDim> sin_row;
+    int64_t bs = 0, seq = 0;
+    data_index_init(begin, bs, p.batches, seq, p.seqlen);
+    for (int64_t i = begin; i < end; ++i) {
+      const cos_t* c_src = cos_ptr + bs * cos_strideB + seq * cos_strideS;
+      const cos_t* s_src = sin_ptr + bs * sin_strideB + seq * sin_strideS;
+      for (int64_t j = 0; j < half_size; ++j) {
+        cos_row[j] = c_src[(2 * j) * cos_strideD];
+        sin_row[j] = s_src[(2 * j + 1) * sin_strideD];
+      }
+
+      auto rotate_head = [&](scalar_t* __restrict__ dst, const scalar_t* __restrict__ src) {
+        if constexpr (std::is_same_v<cos_t, float>) {
+          using fVec = at::vec::Vectorized<float>;
+          constexpr int64_t kPairVec = fVec::size();
+          int64_t j = 0;
+          for (; j <= half_size - kPairVec; j += kPairVec) {
+            auto [xy0, xy1] = load_float_vec2(src + 2 * j);
+            auto [x, y] = at::vec::deinterleave2(xy0, xy1);
+            auto c = fVec::loadu(cos_row.data() + j);
+            auto s = fVec::loadu(sin_row.data() + j);
+            auto [o0, o1] = at::vec::interleave2(x * c - y * s, x * s + y * c);
+            store_float_vec2(dst + 2 * j, o0, o1);
+          }
+          for (; j < half_size; ++j) {
+            const float x = static_cast<float>(src[2 * j]);
+            const float y = static_cast<float>(src[2 * j + 1]);
+            const float c = cos_row[j];
+            const float s = sin_row[j];
+            dst[2 * j] = static_cast<scalar_t>(x * c - y * s);
+            dst[2 * j + 1] = static_cast<scalar_t>(x * s + y * c);
+          }
+        } else {
+          // FP64 rotary table path (e.g. SANA-Video): bit-exact with eager FP64 promotion.
+          for (int64_t j = 0; j < half_size; ++j) {
+            const double x = static_cast<double>(src[2 * j]);
+            const double y = static_cast<double>(src[2 * j + 1]);
+            const double c = cos_row[j];
+            const double s = sin_row[j];
+            dst[2 * j] = static_cast<scalar_t>(x * c - y * s);
+            dst[2 * j + 1] = static_cast<scalar_t>(x * s + y * c);
+          }
+        }
+      };
+
+      const int64_t q_base = bs * p.q_strideB + seq * p.q_strideS;
+      const int64_t k_base = bs * p.k_strideB + seq * p.k_strideS;
+      const int64_t q_out_base = bs * p.q_out_strideB + seq * p.q_out_strideS;
+      const int64_t k_out_base = bs * p.k_out_strideB + seq * p.k_out_strideS;
+
+      for (int64_t h = 0; h < p.num_heads; ++h) {
+        rotate_head(q_out + q_out_base + h * p.q_out_strideH, q_in + q_base + h * p.q_strideH);
+      }
+      for (int64_t h = 0; h < p.num_heads_kv; ++h) {
+        rotate_head(k_out + k_out_base + h * p.k_out_strideH, k_in + k_base + h * p.k_strideH);
+      }
+      data_index_step(bs, p.batches, seq, p.seqlen);
+    }
+  });
+}
+
+}  // namespace
+
+// Paired interleaved RoPE for 4D [B, S, H, D] query/key with 4D [B_or_1, S, 1, D] cos/sin.
+std::tuple<at::Tensor, at::Tensor> apply_interleaved_rope_cpu(
+    const at::Tensor& query, const at::Tensor& key, const at::Tensor& cos, const at::Tensor& sin) {
+  CHECK_LAST_DIM_CONTIGUOUS_INPUT(query);
+  CHECK_LAST_DIM_CONTIGUOUS_INPUT(key);
+  CHECK_CPU(cos);
+  CHECK_CPU(sin);
+  CHECK_DIM(4, query);
+  CHECK_DIM(4, key);
+  CHECK_DIM(4, cos);
+  CHECK_DIM(4, sin);
+
+  const auto st = query.scalar_type();
+  TORCH_CHECK(
+      st == at::kHalf || st == at::kBFloat16 || st == at::kFloat,
+      "query/key dtype must be float16, bfloat16, or float32, got ",
+      st);
+  CHECK_EQ(key.scalar_type(), st);
+  CHECK_EQ(cos.scalar_type(), sin.scalar_type());
+
+  const int64_t B = query.size(0);
+  const int64_t S = query.size(1);
+  const int64_t D = query.size(3);
+  TORCH_CHECK(D % 2 == 0, "head_dim must be even, got ", D);
+  CHECK_EQ(key.size(0), B);
+  CHECK_EQ(key.size(1), S);
+  CHECK_EQ(key.size(3), D);
+  TORCH_CHECK(cos.size(0) == 1 || cos.size(0) == B, "cos batch dim must be 1 or B");
+  TORCH_CHECK(sin.size(0) == 1 || sin.size(0) == B, "sin batch dim must be 1 or B");
+  CHECK_EQ(cos.size(1), S);
+  CHECK_EQ(sin.size(1), S);
+  CHECK_EQ(cos.size(2), 1);
+  CHECK_EQ(sin.size(2), 1);
+  CHECK_EQ(cos.size(3), D);
+  CHECK_EQ(sin.size(3), D);
+
+  at::Tensor q_out = at::empty(query.sizes(), query.options());
+  at::Tensor k_out = at::empty(key.sizes(), key.options());
+  if (query.numel() == 0 && key.numel() == 0) {
+    return {q_out, k_out};
+  }
+
+  at::Tensor cos_in = (cos.scalar_type() == at::kDouble || cos.scalar_type() == at::kFloat) ? cos : cos.to(at::kFloat);
+  at::Tensor sin_in = (sin.scalar_type() == at::kDouble || sin.scalar_type() == at::kFloat) ? sin : sin.to(at::kFloat);
+
+  const RopeParams p{query, key, D, D};
+  const int64_t cos_strideB = cos_in.size(0) == 1 ? 0 : cos_in.stride(0);
+  const int64_t sin_strideB = sin_in.size(0) == 1 ? 0 : sin_in.stride(0);
+
+  AT_DISPATCH_REDUCED_FLOATING_TYPES_AND(at::kFloat, st, "apply_interleaved_rope_cpu", [&] {
+    if (cos_in.scalar_type() == at::kDouble) {
+      apply_interleaved_rope_4d_kernel_impl<scalar_t, double>(
+          q_out.data_ptr<scalar_t>(),
+          k_out.data_ptr<scalar_t>(),
+          query.data_ptr<scalar_t>(),
+          key.data_ptr<scalar_t>(),
+          cos_in.data_ptr<double>(),
+          sin_in.data_ptr<double>(),
+          p,
+          cos_strideB,
+          cos_in.stride(1),
+          cos_in.stride(3),
+          sin_strideB,
+          sin_in.stride(1),
+          sin_in.stride(3));
+    } else {
+      apply_interleaved_rope_4d_kernel_impl<scalar_t, float>(
+          q_out.data_ptr<scalar_t>(),
+          k_out.data_ptr<scalar_t>(),
+          query.data_ptr<scalar_t>(),
+          key.data_ptr<scalar_t>(),
+          cos_in.data_ptr<float>(),
+          sin_in.data_ptr<float>(),
+          p,
+          cos_strideB,
+          cos_in.stride(1),
+          cos_in.stride(3),
+          sin_strideB,
+          sin_in.stride(1),
+          sin_in.stride(3));
+    }
+  });
+
+  return {q_out, k_out};
+}

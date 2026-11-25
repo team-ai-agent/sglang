@@ -443,10 +443,12 @@ class GPUWorker(GPUWorkerPostTrainingMixin):
         )
         # num_gpus is the total world size across every node; the co-located,
         # CPU-contending worker count on THIS host is num_gpus // nnodes.
-        local_num_gpus = self.server_args.num_gpus // self.server_args.nnodes
-        intra_op_threads = _worker_cpu_intra_op_threads(local_num_gpus)
-        if intra_op_threads is not None:
-            torch.set_num_threads(intra_op_threads)
+        # Pure-CPU workers manage their full OpenMP/NUMA pool in CPUWorker.
+        if not current_platform.is_cpu():
+            local_num_gpus = self.server_args.num_gpus // self.server_args.nnodes
+            intra_op_threads = _worker_cpu_intra_op_threads(local_num_gpus)
+            if intra_op_threads is not None:
+                torch.set_num_threads(intra_op_threads)
         # Set environment variables for distributed initialization. Single
         # node rendezvous stays on loopback; cross-node rendezvous must use
         # an address every node can reach, so --dist-init-addr takes over.

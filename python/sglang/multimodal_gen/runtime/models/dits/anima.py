@@ -27,7 +27,7 @@ from sglang.multimodal_gen.runtime.distributed.sp_shard_utils import (
     tail_attn_meta,
 )
 from sglang.multimodal_gen.runtime.layers.attention import USPAttention
-from sglang.multimodal_gen.runtime.layers.layernorm import RMSNorm
+from sglang.multimodal_gen.runtime.layers.layernorm import RMSNorm, apply_qk_norm
 from sglang.multimodal_gen.runtime.layers.linear import (
     ColumnParallelLinear,
     ReplicatedLinear,
@@ -63,26 +63,36 @@ def _anima_rope_eager(q, k, cos, sin):
     )
 
 
-def _anima_rope(q, k, cos, sin):
-    if (
-        not torch.compiler.is_compiling()
-        and q.is_cuda
-        and torch.version.hip is None
-        and not _ANIMA_ROPE.disabled
-    ):
-        from sglang.kernels.ops.diffusion import (
-            can_use_fused_rope_rotate_half_fp32,
-            fused_rope_rotate_half_fp32,
-        )
-
-        if can_use_fused_rope_rotate_half_fp32(q, k, cos, sin):
-            return _ANIMA_ROPE.run(
-                lambda: fused_rope_rotate_half_fp32(q, k, cos, sin),
-                lambda: _anima_rope_eager(q, k, cos, sin),
-                sig=(q.device, q.dtype, q.shape),
-                equal=tensors_equal,
-                logger=logger,
+def _anima_rope(q, k, cos, sin, *, inplace: bool = False):
+    if not torch.compiler.is_compiling():
+        if q.is_cuda and torch.version.hip is None and not _ANIMA_ROPE.disabled:
+            from sglang.kernels.ops.diffusion import (
+                can_use_fused_rope_rotate_half_fp32,
+                fused_rope_rotate_half_fp32,
             )
+
+            if can_use_fused_rope_rotate_half_fp32(q, k, cos, sin):
+                return _ANIMA_ROPE.run(
+                    lambda: fused_rope_rotate_half_fp32(q, k, cos, sin),
+                    lambda: _anima_rope_eager(q, k, cos, sin),
+                    sig=(q.device, q.dtype, q.shape),
+                    equal=tensors_equal,
+                    logger=logger,
+                )
+        elif (
+            q.device.type == "cpu"
+            and q.dim() == 4
+            and k.dim() == 4
+            and cos.dim() == 2
+            and sin.dim() == 2
+            and hasattr(torch.ops.sgl_kernel, "apply_rotary_pos_emb_cpu")
+        ):
+            q_out = q if inplace else q.clone()
+            k_out = k if inplace else k.clone()
+            cos_b = cos.unsqueeze(0).expand(q_out.size(0), -1, -1)
+            sin_b = sin.unsqueeze(0).expand(q_out.size(0), -1, -1)
+            torch.ops.sgl_kernel.apply_rotary_pos_emb_cpu(q_out, k_out, cos_b, sin_b, 2)
+            return q_out, k_out
     return _anima_rope_eager(q, k, cos, sin)
 
 
@@ -91,8 +101,10 @@ def _is_anima_block(name, module):
 
 
 def _anima_residual_add(residual, update, gate):
-    # Fuse in BCG warmup/capture; dispatch overhead outweighs the savings in eager.
-    if is_in_breakable_cuda_graph() and not torch.compiler.is_compiling():
+    # Fuse in BCG warmup/capture or on CPU; GPU eager avoids Python launch overhead.
+    if not torch.compiler.is_compiling() and (
+        is_in_breakable_cuda_graph() or residual.device.type == "cpu"
+    ):
         return residual_gate_add(residual, update, gate)
     return residual + gate * update
 
@@ -181,6 +193,24 @@ class AnimaAdaLayerNorm(nn.Module):
     def forward(self, x, embedded_timestep, temb, values=None):
         if values is None:
             values = self.project_modulation(embedded_timestep, temb)
+        if (
+            not torch.compiler.is_compiling()
+            and x.device.type == "cpu"
+            and x.dtype in (torch.float16, torch.bfloat16)
+            and x.dim() == 3
+            and x.stride(-1) == 1
+            and hasattr(torch.ops.sgl_kernel, "fused_norm_scale_shift_cpu")
+        ):
+            from sglang.kernels.ops.diffusion.modulate.scale_shift_triton import (
+                expand_scale_shift_cpu_param,
+            )
+
+            scale = expand_scale_shift_cpu_param(values[1].contiguous(), x)
+            shift = expand_scale_shift_cpu_param(values[0].contiguous(), x)
+            out = torch.ops.sgl_kernel.fused_norm_scale_shift_cpu(
+                x, None, None, scale, shift, "layer", self.norm.eps
+            )
+            return (out, values[2]) if self.gated else out
         norm_x = self.norm(x)
         if (
             norm_x.is_cuda
@@ -251,9 +281,9 @@ class AnimaAttention(nn.Module):
         q = self.to_q(x)[0].unflatten(-1, (self.heads, self.head_dim))
         k = self.to_k(context)[0].unflatten(-1, (self.heads, self.head_dim))
         v = self.to_v(context)[0].unflatten(-1, (self.heads, self.head_dim))
-        q, k = self.norm_q(q), self.norm_k(k)
+        q, k = apply_qk_norm(q, k, self.norm_q, self.norm_k, self.head_dim)
         if rope is not None:
-            q, k = _anima_rope(q, k, *rope)
+            q, k = _anima_rope(q, k, *rope, inplace=True)
         out = self.attn(q, k, v, attn_mask_meta=attn_mask_meta).flatten(2)
         return self.to_out[0](out)[0]
 
