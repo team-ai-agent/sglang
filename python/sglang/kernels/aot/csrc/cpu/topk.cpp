@@ -618,8 +618,14 @@ std::tuple<at::Tensor, at::Tensor> topk_sigmoid_cpu(
       case 160:
         LAUNCH_TOPK_SIGMOID_KERNEL(160);
         break;
+      case 192:
+        LAUNCH_TOPK_SIGMOID_KERNEL(192);
+        break;
       case 256:
         LAUNCH_TOPK_SIGMOID_KERNEL(256);
+        break;
+      case 288:
+        LAUNCH_TOPK_SIGMOID_KERNEL(288);
         break;
       case 384:
         LAUNCH_TOPK_SIGMOID_KERNEL(384);
@@ -687,8 +693,14 @@ std::tuple<at::Tensor, at::Tensor> topk_softmax_cpu(
       case 160:
         LAUNCH_TOPK_SOFTMAX_KERNEL(160);
         break;
+      case 192:
+        LAUNCH_TOPK_SOFTMAX_KERNEL(192);
+        break;
       case 256:
         LAUNCH_TOPK_SOFTMAX_KERNEL(256);
+        break;
+      case 288:
+        LAUNCH_TOPK_SOFTMAX_KERNEL(288);
         break;
       case 384:
         LAUNCH_TOPK_SOFTMAX_KERNEL(384);
@@ -858,6 +870,9 @@ std::tuple<at::Tensor, at::Tensor> biased_grouped_topk_cpu(
     switch (num_experts) {
       case 128:
         LAUNCH_BIASED_GROUPED_TOPK_KERNEL(128, 8);
+        break;
+      case 160:
+        LAUNCH_BIASED_GROUPED_TOPK_KERNEL(160, 8);
         break;
       case 192:
         LAUNCH_BIASED_GROUPED_TOPK_KERNEL(192, 8);
