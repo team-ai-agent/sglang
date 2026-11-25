@@ -739,6 +739,15 @@ def _fuse_scale_shift_kernel_cpu(
     block_l: int = 128,
     block_c: int = 128,
 ) -> torch.Tensor:
+    if x.dtype not in (torch.float16, torch.bfloat16):
+        from sglang.kernels.ops.diffusion.common.fallback_torch import (
+            fuse_scale_shift_kernel_native,
+        )
+
+        return fuse_scale_shift_kernel_native(
+            x, scale, shift, scale_constant, block_l, block_c
+        )
+
     import sgl_kernel  # noqa: F401
 
     del block_l, block_c
