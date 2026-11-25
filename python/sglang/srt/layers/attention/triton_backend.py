@@ -257,6 +257,11 @@ class TritonAttnBackend(AttentionBackend):
             _hip.init_m31_draft(self, model_runner.model_config.hf_config)
         self.req_to_token_pool = model_runner.req_to_token_pool
         self.token_to_kv_pool = model_runner.token_to_kv_pool
+        self.use_fp8_kv_cache = model_runner.kv_cache_dtype in (
+            torch.float8_e4m3fn,
+            torch.float8_e4m3fnuz,
+            torch.float8_e5m2,
+        )
         self.req_to_token = model_runner.req_to_token_pool.req_to_token
         self.token_to_kv_pool_allocator = model_runner.token_to_kv_pool_allocator
         # Lets the Triton wrappers specialize on PAGE_SIZE; page_size=1 is
@@ -1766,6 +1771,15 @@ class TritonAttnBackend(AttentionBackend):
                 layer, loc, k, v, k_scale, v_scale, **kwargs
             )
 
+    def _get_kv_descales(self, layer: RadixAttention) -> tuple[float, float]:
+        if (
+            self.use_fp8_kv_cache
+            and layer.k_scale is not None
+            and layer.v_scale is not None
+        ):
+            return layer.k_scale_float, layer.v_scale_float
+        return 1.0, 1.0
+
     def _gfx115_verify_attention(self, q, o, layer, forward_batch) -> bool:
         """Target-verify attention on gfx115x that reads the cached prefix once for the
         whole draft block (the block's K/V are already in the cache). Returns whether it
@@ -1857,7 +1871,7 @@ class TritonAttnBackend(AttentionBackend):
                     forward_batch,
                     window_locs=self._window_write_locs(),
                 )
-                if layer.k_scale is None:
+                if not self.use_fp8_kv_cache or layer.k_scale is None:
                     self._set_kv_buffer(forward_batch, layer, loc_info, k, v)
                 elif self.use_mla:
                     # For MLA, scale K manually before storing since MLATokenToKVPool
@@ -1975,12 +1989,7 @@ class TritonAttnBackend(AttentionBackend):
             kv_indices = self.forward_metadata.kv_indices
             window_kv_offsets = None
 
-        if layer.k_scale is not None and layer.v_scale is not None:
-            k_descale = layer.k_scale_float
-            v_descale = layer.v_scale_float
-        else:
-            k_descale = 1.0
-            v_descale = 1.0
+        k_descale, v_descale = self._get_kv_descales(layer)
 
         if (
             self.use_verify_gfx115
@@ -2132,7 +2141,9 @@ class TritonAttnBackend(AttentionBackend):
             raise NotImplementedError(
                 "Triton dense one-shot prefill does not support sliding windows"
             )
-        if layer.k_scale is not None or layer.v_scale is not None:
+        if self.use_fp8_kv_cache and (
+            layer.k_scale is not None or layer.v_scale is not None
+        ):
             raise NotImplementedError(
                 "Triton dense one-shot prefill does not support KV descales"
             )
@@ -2200,12 +2211,7 @@ class TritonAttnBackend(AttentionBackend):
         kv_indices = self.forward_metadata.kv_indices
         max_extend_len = self.forward_metadata.max_extend_len
 
-        if layer.k_scale is not None and layer.v_scale is not None:
-            k_descale = layer.k_scale_float
-            v_descale = layer.v_scale_float
-        else:
-            k_descale = 1.0
-            v_descale = 1.0
+        k_descale, v_descale = self._get_kv_descales(layer)
 
         k_buffer = self.kv_layers.read(layer.layer_id).key()
         v_buffer = self.kv_layers.read(layer.layer_id).value()
@@ -2428,12 +2434,7 @@ class TritonAttnBackend(AttentionBackend):
         # Convert prefix_lens to int32 for the kernel
         prefix_lens = prefix_lens.to(torch.int32)
 
-        if layer.k_scale is not None and layer.v_scale is not None:
-            k_descale = layer.k_scale_float
-            v_descale = layer.v_scale_float
-        else:
-            k_descale = 1.0
-            v_descale = 1.0
+        k_descale, v_descale = self._get_kv_descales(layer)
 
         # Call unified kernel
         self.extend_attention_fwd_unified(
@@ -2499,7 +2500,11 @@ class TritonAttnBackend(AttentionBackend):
                         f"{forward_batch.out_cache_loc.shape[0]} tokens"
                     )
             if self.use_mla:
-                if layer.k_scale is not None and layer.k_scale_float != 1.0:
+                if (
+                    self.use_fp8_kv_cache
+                    and layer.k_scale is not None
+                    and layer.k_scale_float != 1.0
+                ):
                     # MLATokenToKVPool doesn't accept scale parameters; k is unused
                     # after this point in decode, so scale in place.
                     k.div_(layer.k_scale)
@@ -2522,8 +2527,8 @@ class TritonAttnBackend(AttentionBackend):
                     ),
                     k,
                     v,
-                    layer.k_scale,
-                    layer.v_scale,
+                    layer.k_scale if self.use_fp8_kv_cache else None,
+                    layer.v_scale if self.use_fp8_kv_cache else None,
                 )
 
         if layer.sliding_window_size is not None and layer.sliding_window_size > -1:
@@ -2540,12 +2545,7 @@ class TritonAttnBackend(AttentionBackend):
             kv_indptr = self.forward_metadata.kv_indptr
             kv_indices = self.forward_metadata.kv_indices
 
-        if layer.k_scale is not None and layer.v_scale is not None:
-            k_descale = layer.k_scale_float
-            v_descale = layer.v_scale_float
-        else:
-            k_descale = 1.0
-            v_descale = 1.0
+        k_descale, v_descale = self._get_kv_descales(layer)
 
         # Select the correctly-sized attn_logits buffer for this layer.
         # The triton kernel's // Lv stride trick requires attn_logits.shape[-1]
