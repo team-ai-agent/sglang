@@ -15,7 +15,11 @@ export const config = {
 
   supportedHardware: [
     "h100", "h200", "b200", "b300", "gb200", "gb300", "dgx-spark",
-    "mi300x", "mi325x", "mi350x", "mi355x",
+    "mi300x", "mi325x", "mi350x", "mi355x", "xeon",
+  ],
+
+  hardware: [
+    { id: "xeon", label: "XEON", vram: "CPU", vendor: "cpu" },
   ],
 
   variants: [
@@ -82,7 +86,7 @@ sgl-eval run gsm8k \\
     // yet, so `runModes` below hides the Docker tab on AMD.
   },
 
-  runModes: (s) => (["mi300x", "mi325x", "mi350x", "mi355x"].includes(s.hw)
+  runModes: (s) => (["mi300x", "mi325x", "mi350x", "mi355x", "xeon"].includes(s.hw)
     ? ["python"] : ["python", "docker"]),
 
   // Prefills the issue template's `model` field on "Submit verified cell".
@@ -96,14 +100,14 @@ sgl-eval run gsm8k \\
     // text model.
     attention: {
       knobs: [
-        { id: "tp", label: "TP", values: [null, 1, { value: 2, disable: { hw: ["dgx-spark"] } }] },
+        { id: "tp", label: "TP", values: [null, 1, { value: 2, disable: { hw: ["dgx-spark"] } }, { value: 4, disable: { hw: ["dgx-spark"] } }] },
       ],
     },
     pdDisagg: {
       modes: [
         { id: "off",     label: "Off" },
-        { id: "prefill", label: "Prefill role", hide: { hw: ["dgx-spark"] } },
-        { id: "decode",  label: "Decode role",  hide: { hw: ["dgx-spark"] } },
+        { id: "prefill", label: "Prefill role", hide: { hw: ["dgx-spark", "xeon"] } },
+        { id: "decode",  label: "Decode role",  hide: { hw: ["dgx-spark", "xeon"] } },
       ],
       transferBackends: [
         { id: "mooncake", label: "Mooncake" },
@@ -458,6 +462,23 @@ sgl-eval run gsm8k \\
         "--trust-remote-code",
         "--model-path {{MODEL_NAME}}",
         "--attention-backend aiter",
+        "--reasoning-parser auto",
+        "--tool-call-parser auto",
+        "--host {{HOST_IP}}",
+        "--port {{PORT}}",
+      ],
+    },
+    {
+      match: { hw: "xeon", variant: "vl", quant: "bf16", strategy: "balanced", nodes: "single" },
+      verified: false,
+      env: [],
+      flags: [
+        "--trust-remote-code",
+        "--model-path {{MODEL_NAME}}",
+        "--device cpu",
+        "--disable-overlap-schedule",
+        "--tp 4",
+        "--dtype bfloat16",
         "--reasoning-parser auto",
         "--tool-call-parser auto",
         "--host {{HOST_IP}}",
