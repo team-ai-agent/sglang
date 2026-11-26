@@ -1,6 +1,10 @@
 export const config = {
   modelName: "HiDream-O1-Image",
-  supportedHardware: ["h200"],
+  supportedHardware: ["h200", "xeon"],
+  hardware: [
+    { id: "xeon", label: "XEON", vram: "CPU", vendor: "cpu" },
+  ],
+  runModes: (s) => (s.hw === "xeon" ? ["python"] : ["python", "docker"]),
   groupHardware: false,
   matchDims: [],
   overlayDims: [
@@ -27,16 +31,25 @@ export const config = {
       tp_size: 1, ulysses_degree: 1, ring_degree: 1,
     },
     resource: {
-      limits: { nodes: { min: 1, max: 1 }, gpus_per_node: { min: 1, max: 8 } },
+      limits: {
+        nodes: { min: 1, max: 1 },
+        gpus_per_node: { min: 1, max: 8, disabledWhen: (s) => s.hw === "xeon", disabledValue: 1 },
+      },
       verifiedRecipes: [
         { id: "h200-tp1", hw: "h200", nodes: 1, gpus_per_node: 1, tp_size: 1, ulysses_degree: 1, ring_degree: 1, default: true },
         { id: "h200-tp2", hw: "h200", nodes: 1, gpus_per_node: 2, tp_size: 2, ulysses_degree: 1, ring_degree: 1 },
       ],
-      autoTopology: (s) => ({ tp_size: Number(s.gpus_per_node), ulysses_degree: 1, ring_degree: 1 }),
+      autoTopology: (s) => ({ tp_size: s.hw === "xeon" ? 1 : Number(s.gpus_per_node), ulysses_degree: 1, ring_degree: 1 }),
       validateTopology: (s, topology) => {
         const errors = [];
         if (![topology.tp_size, topology.ulysses_degree, topology.ring_degree].every((n) => Number.isInteger(n) && n > 0)) {
           errors.push("Parallel degrees must be positive integers.");
+        }
+        if (s.hw === "xeon") {
+          if (Number(s.nodes) !== 1 || Number(s.gpus_per_node) !== 1 || topology.tp_size !== 1 || topology.ulysses_degree !== 1 || topology.ring_degree !== 1) {
+            errors.push("Intel Xeon CPU deployment runs a single process without multi-GPU parallelism.");
+          }
+          return errors;
         }
         if (Number(s.nodes) !== 1 || topology.tp_size !== Number(s.gpus_per_node)) {
           errors.push("Use a single node with TP equal to the number of GPUs.");
@@ -61,14 +74,15 @@ export const config = {
         && entry.ulysses_degree === topology.ulysses_degree
         && entry.ring_degree === topology.ring_degree);
       const verified = !!recipe && errors.length === 0;
-      const flags = ["--model-path {{MODEL_NAME}}", `--num-gpus ${Number(s.gpus_per_node)}`];
+      const flags = ["--model-path {{MODEL_NAME}}", ...(s.hw === "xeon" ? [] : [`--num-gpus ${Number(s.gpus_per_node)}`])];
       if (topology.tp_size > 1) flags.push(`--tp-size ${topology.tp_size}`);
       flags.push("--host {{HOST_IP}}", "--port {{PORT}}");
       return {
         match: { hw: s.hw }, nnodes: 1, verified, flags,
+        env: s.hw === "xeon" ? ["SGLANG_DIFFUSION_PLATFORM_OVERRIDE=cpu"] : [],
         builder: {
           topology, errors,
-          topologySummary: `TP ${topology.tp_size}; no sequence parallelism`,
+          topologySummary: s.hw === "xeon" ? "CPU" : `TP ${topology.tp_size}; no sequence parallelism`,
           warnings: verified ? [] : ["Valid custom topology; exact end-to-end verification is pending."],
           verification: { serve: verified ? "verified" : "unverified", request: verified ? "verified" : "unverified" },
         },
