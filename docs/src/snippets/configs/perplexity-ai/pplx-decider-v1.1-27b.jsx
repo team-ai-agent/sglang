@@ -18,7 +18,11 @@ export const config = {
 
   latencyPercentile: "P50",
 
-  supportedHardware: ["h200", "gb300"],
+  supportedHardware: ["h200", "gb300", "xeon"],
+
+  hardware: [
+    { id: "xeon", label: "XEON", vram: "CPU", vendor: "cpu" },
+  ],
 
   variants: [
     { id: "default", label: "Default", subtitle: "27B dense, 1 GPU" },
@@ -56,6 +60,8 @@ export const config = {
     gb300: "lmsysorg/sglang:dev",
   },
 
+  runModes: (s) => (s.hw === "xeon" ? ["python"] : ["python", "docker"]),
+
   github: { cookbookModel: "perplexity-ai/pplx-decider-v1.1-27b" },
 
   // Every request is prefill-only (one pass per question, no decode), so the
@@ -90,10 +96,14 @@ export const config = {
           { id: "auto", label: "Auto" },
           { id: "trtllm", label: "TRT-LLM MHA",
             flags: ["--attention-backend trtllm_mha", "--page-size 64"],
-            disable: { hw: ["h200"] },
+            disable: { hw: ["h200", "xeon"] },
             disableReason: "trtllm_mha is a Blackwell (SM100) kernel" },
-          { id: "flashinfer", label: "FlashInfer", flags: ["--attention-backend flashinfer"] },
-          { id: "triton", label: "Triton", flags: ["--attention-backend triton"] },
+          { id: "flashinfer", label: "FlashInfer", flags: ["--attention-backend flashinfer"],
+            disable: { hw: ["xeon"] },
+            disableReason: "FlashInfer requires an NVIDIA GPU" },
+          { id: "triton", label: "Triton", flags: ["--attention-backend triton"],
+            disable: { hw: ["xeon"] },
+            disableReason: "Triton attention backend is not supported on Intel Xeon CPUs" },
         ],
       },
       {
@@ -101,8 +111,12 @@ export const config = {
         stripPrefixes: ["--linear-attn-prefill-backend"],
         options: [
           { id: "auto", label: "Auto" },
-          { id: "triton", label: "Triton", flags: ["--linear-attn-prefill-backend triton"] },
-          { id: "flashinfer", label: "FlashInfer", flags: ["--linear-attn-prefill-backend flashinfer"] },
+          { id: "triton", label: "Triton", flags: ["--linear-attn-prefill-backend triton"],
+            disable: { hw: ["xeon"] },
+            disableReason: "Triton GDN kernel is not supported on Intel Xeon CPUs" },
+          { id: "flashinfer", label: "FlashInfer", flags: ["--linear-attn-prefill-backend flashinfer"],
+            disable: { hw: ["xeon"] },
+            disableReason: "FlashInfer GDN kernel requires an NVIDIA GPU" },
         ],
       },
     ],
@@ -130,6 +144,19 @@ export const config = {
       env: [],
       flags: [
         "--model-path {{MODEL_NAME}}",
+        "--host {{HOST_IP}}",
+        "--port {{PORT}}",
+      ],
+    },
+    {
+      match: { hw: "xeon", variant: "default", quant: "bf16", strategy: "balanced", nodes: "single" },
+      verified: false,
+      env: [],
+      flags: [
+        "--model-path {{MODEL_NAME}}",
+        "--device cpu",
+        "--disable-overlap-schedule",
+        "--dtype bfloat16",
         "--host {{HOST_IP}}",
         "--port {{PORT}}",
       ],
