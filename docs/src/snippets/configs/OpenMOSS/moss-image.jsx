@@ -1,10 +1,12 @@
 export const config = {
   modelName: "MOSS-Image",
-  supportedHardware: ["h200", "h100", "rtx5090", "rtxpro6000"],
+  supportedHardware: ["h200", "h100", "rtx5090", "rtxpro6000", "xeon"],
   hardware: [
     { id: "rtx5090", label: "RTX 5090", vram: "32GB", vendor: "consumer" },
     { id: "rtxpro6000", label: "RTX PRO 6000 Blackwell", vram: "96GB", vendor: "consumer" },
+    { id: "xeon", label: "XEON", vram: "CPU", vendor: "cpu" },
   ],
+  runModes: (s) => (s.hw === "xeon" ? ["python"] : ["python", "docker"]),
   groupHardware: false,
   matchDims: [],
   overlayDims: [
@@ -13,8 +15,8 @@ export const config = {
       description: "Auto uses the model's memory policy. Resident weights need room for activations too.",
       options: [
         { id: "auto", label: "Auto", recommended: true },
-        { id: "resident", label: "Resident", flags: ["--component-residency all=resident"] },
-        { id: "offload", label: "Layerwise offload", flags: ["--component-residency transformer=layerwise-offload,text_encoder=layerwise-offload"] },
+        { id: "resident", label: "Resident", flags: ["--component-residency all=resident"], disabled: (s) => s.hw === "xeon", disableReason: "Component residency overrides are for GPU memory management." },
+        { id: "offload", label: "Layerwise offload", flags: ["--component-residency transformer=layerwise-offload,text_encoder=layerwise-offload"], disabled: (s) => s.hw === "xeon", disableReason: "Layerwise offload is for GPU memory management." },
       ],
     },
     {
@@ -43,13 +45,17 @@ export const config = {
   commandBuilder: {
     defaultSelection: { hw: "h200", nodes: 1, gpus_per_node: 1, topology_mode: "auto", tp_size: 1, ulysses_degree: 1, ring_degree: 1 },
     resource: {
-      limits: { nodes: { min: 1, max: 1 }, gpus_per_node: { min: 1, max: 4 } },
+      limits: {
+        nodes: { min: 1, max: 1 },
+        gpus_per_node: { min: 1, max: 4, disabledWhen: (s) => s.hw === "xeon", disabledValue: 1 },
+      },
       verifiedRecipes: [],
       // Every guidance recipe runs two or three branches, so an even GPU count
       // splits them first (CFG parallel) and gives Ulysses the rest. 1024x1024
       // 50 steps on B200: CFG 2 2.44 s vs Ulysses 2 3.18 s on 2 GPUs, CFG 2 x
       // Ulysses 2 1.88 s vs Ulysses 4 2.34 s on 4 GPUs.
       autoTopology: (s) => {
+        if (s.hw === "xeon") return { tp_size: 1, ulysses_degree: 1, ring_degree: 1, cfg_degree: 1 };
         const gpus = Number(s.gpus_per_node);
         const cfg = gpus % 2 === 0 ? 2 : 1;
         return { tp_size: 1, ulysses_degree: gpus / cfg, ring_degree: 1, cfg_degree: cfg };
@@ -59,6 +65,12 @@ export const config = {
         const cfg = t.cfg_degree || 1;
         if (![t.tp_size, t.ulysses_degree, t.ring_degree].every((n) => Number.isInteger(n) && n > 0)) errors.push("Parallel degrees must be positive integers.");
         if (t.tp_size !== 1) errors.push("Tensor parallelism is not implemented for this model.");
+        if (s.hw === "xeon") {
+          if (Number(s.nodes) !== 1 || Number(s.gpus_per_node) !== 1 || cfg !== 1 || t.ulysses_degree !== 1 || t.ring_degree !== 1) {
+            errors.push("Intel Xeon CPU deployment runs a single process without multi-GPU parallelism.");
+          }
+          return errors;
+        }
         if (Number(s.nodes) !== 1 || Number(s.gpus_per_node) !== cfg * t.tp_size * t.ulysses_degree * t.ring_degree) errors.push("GPU count must match CFG times TP times Ulysses times Ring on one node.");
         if (24 % t.ulysses_degree) errors.push("Ulysses degree must divide the 24 attention heads.");
         if (t.ring_degree > 1 && s.attention === "sdpa") errors.push("Ring requires an LSE-capable backend, not Torch SDPA.");
@@ -72,14 +84,15 @@ export const config = {
         : resource.autoTopology(s);
       const errors = resource.validateTopology(s, topology);
       const flags = ["--model-path {{MODEL_NAME}}"];
-      if (Number(s.gpus_per_node) > 1) flags.push(`--num-gpus ${s.gpus_per_node}`, "--tp-size 1", `--ulysses-degree ${topology.ulysses_degree}`, `--ring-degree ${topology.ring_degree}`);
-      if ((topology.cfg_degree || 1) > 1) flags.push(`--cfg-parallel-size ${topology.cfg_degree}`);
+      if (s.hw !== "xeon" && Number(s.gpus_per_node) > 1) flags.push(`--num-gpus ${s.gpus_per_node}`, "--tp-size 1", `--ulysses-degree ${topology.ulysses_degree}`, `--ring-degree ${topology.ring_degree}`);
+      if (s.hw !== "xeon" && (topology.cfg_degree || 1) > 1) flags.push(`--cfg-parallel-size ${topology.cfg_degree}`);
       flags.push("--host {{HOST_IP}}", "--port {{PORT}}");
       return {
         match: { hw: s.hw }, nnodes: 1, verified: false, flags,
+        env: s.hw === "xeon" ? ["SGLANG_DIFFUSION_PLATFORM_OVERRIDE=cpu"] : [],
         builder: {
           topology, errors,
-          topologySummary: `CFG ${topology.cfg_degree || 1}, TP ${topology.tp_size}, Ulysses ${topology.ulysses_degree}, Ring ${topology.ring_degree}`,
+          topologySummary: s.hw === "xeon" ? "CPU" : `CFG ${topology.cfg_degree || 1}, TP ${topology.tp_size}, Ulysses ${topology.ulysses_degree}, Ring ${topology.ring_degree}`,
           warnings: ["This exact hardware and workload recipe is not end-to-end verified."],
           verification: { serve: "unverified", request: "unverified" },
         },
