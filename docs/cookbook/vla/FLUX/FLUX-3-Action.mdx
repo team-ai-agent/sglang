@@ -64,6 +64,16 @@ sglang serve black-forest-labs/flux-3-action-droid \
   --port 30000
 ```
 
+On Intel Xeon CPUs:
+
+```bash Command
+SGLANG_DIFFUSION_PLATFORM_OVERRIDE=cpu \
+sglang serve black-forest-labs/flux-3-action-droid \
+  --model-type diffusion \
+  --host 127.0.0.1 \
+  --port 30000
+```
+
 Serve a distilled variant:
 
 ```bash Command
