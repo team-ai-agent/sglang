@@ -25,7 +25,7 @@ SGLang detects the `EmbeddingGemma2Model` architecture and configures it automat
 
 ## Prerequisites
 
-- An NVIDIA CUDA GPU. The model weighs about 1.5 GB in BF16, so any data-center GPU works.
+- An NVIDIA CUDA GPU or Intel Xeon CPU. The model weighs about 1.5 GB in BF16.
 - A Transformers build that includes EmbeddingGemma 2 (`model_type: embedding_gemma2`). Older releases fail at startup with `Transformers does not recognize this architecture`.
 - An SGLang build that includes EmbeddingGemma 2 support:
 
@@ -40,6 +40,17 @@ Run the model in BF16 (the checkpoint default) or FP32. Do not use FP16: the mod
 ```bash
 sglang serve \
   --model-path google/embeddinggemma-2 \
+  --host 0.0.0.0
+```
+
+On Intel Xeon CPUs:
+
+```bash
+sglang serve \
+  --model-path google/embeddinggemma-2 \
+  --device cpu \
+  --disable-overlap-schedule \
+  --dtype bfloat16 \
   --host 0.0.0.0
 ```
 

@@ -10,7 +10,8 @@ export const GLM45VDeployment = () => {
         { id: 'h200', label: 'H200', default: false },
         { id: 'mi300x', label: 'MI300X', default: false },
         { id: 'mi325x', label: 'MI325X', default: false },
-        { id: 'mi355x', label: 'MI355X', default: false }
+        { id: 'mi355x', label: 'MI355X', default: false },
+        { id: 'xeon', label: 'XEON', default: false }
       ]
     },
     quantization: {
@@ -68,7 +69,13 @@ export const GLM45VDeployment = () => {
   }, []);
 
   const handleRadioChange = (optionName, value) => {
-    setValues(prev => ({ ...prev, [optionName]: value }));
+    setValues(prev => {
+      const next = { ...prev, [optionName]: value };
+      if (optionName === 'hardware' && value === 'xeon') {
+        next.quantization = 'bf16';
+      }
+      return next;
+    });
   };
 
   // Generate command
@@ -83,7 +90,8 @@ export const GLM45VDeployment = () => {
       h200: { tp: 4 },
       mi300x: { tp: 4 },
       mi325x: { tp: 4 },
-      mi355x: { tp: 4 }
+      mi355x: { tp: 4 },
+      xeon: { tp: 4 }
     };
 
     const hwConfig = config[hardware];
@@ -96,6 +104,7 @@ export const GLM45VDeployment = () => {
 
     // Check if AMD hardware
     const isAMD = ['mi300x', 'mi325x', 'mi355x'].includes(hardware);
+    const isXeon = hardware === 'xeon';
 
     let cmd = '';
     if (isAMD) {
@@ -105,6 +114,9 @@ export const GLM45VDeployment = () => {
     } else {
       cmd = 'python -m sglang.launch_server \\\n';
       cmd += `  --model ${modelName}`;
+      if (isXeon) {
+        cmd += ` \\\n  --device cpu \\\n  --disable-overlap-schedule`;
+      }
       if (hwConfig.tp > 1) {
         cmd += ` \\\n  --tp ${hwConfig.tp}`;
       }
@@ -155,9 +167,10 @@ export const GLM45VDeployment = () => {
             ) : (
               option.items.map(item => {
                 const isChecked = values[option.name] === item.id;
+                const isDisabled = values.hardware === 'xeon' && option.name === 'quantization' && item.id === 'fp8';
                 return (
-                  <label key={item.id} style={{ ...labelBaseStyle, ...(isChecked ? checkedStyle : {}) }}>
-                    <input type="radio" name={option.name} value={item.id} checked={isChecked} onChange={() => handleRadioChange(option.name, item.id)} style={{ display: 'none' }} />
+                  <label key={item.id} style={{ ...labelBaseStyle, ...(isChecked ? checkedStyle : {}), ...(isDisabled ? disabledStyle : {}) }}>
+                    <input type="radio" name={option.name} value={item.id} checked={isChecked} disabled={isDisabled} onChange={() => !isDisabled && handleRadioChange(option.name, item.id)} style={{ display: 'none' }} />
                     {item.label}
                     {item.subtitle && <small style={{ ...subtitleStyle, color: isChecked ? 'rgba(255,255,255,0.85)' : 'inherit' }}>{item.subtitle}</small>}
                   </label>

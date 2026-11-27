@@ -7,7 +7,8 @@ export const MiMoV2FlashDeployment = () => {
       items: [
         { id: 'h200', label: 'H200', default: true },
         { id: 'h100', label: 'H100', default: false },
-        { id: 'mi355x', label: 'MI355X', default: false }
+        { id: 'mi355x', label: 'MI355X', default: false },
+        { id: 'xeon', label: 'XEON', default: false }
       ]
     },
     modelname: {
@@ -23,9 +24,9 @@ export const MiMoV2FlashDeployment = () => {
       type: 'checkbox',
       items: [
         { id: 'tp', label: 'TP 8 (Required)', default: true, disabled: true },
-        { id: 'dp', label: 'DP Attention (DP 2)', default: true },
-        { id: 'mtp', label: 'Multi-token Prediction (MTP)', default: true },
-        { id: 'optimization', label: 'Performance Optimizations', default: true }
+        { id: 'dp', label: 'DP Attention (DP 2)', default: true, disabledWhen: (v) => v.hardware === 'xeon' },
+        { id: 'mtp', label: 'Multi-token Prediction (MTP)', default: true, disabledWhen: (v) => v.hardware === 'xeon' },
+        { id: 'optimization', label: 'Performance Optimizations', default: true, disabledWhen: (v) => v.hardware === 'xeon' }
       ]
     },
     reasoning: {
@@ -72,7 +73,13 @@ export const MiMoV2FlashDeployment = () => {
   }, []);
 
   const handleRadioChange = (optionName, value) => {
-    setValues(prev => ({ ...prev, [optionName]: value }));
+    setValues(prev => {
+      const next = { ...prev, [optionName]: value };
+      if (optionName === 'hardware' && value === 'xeon') {
+        next.strategy = ['tp'];
+      }
+      return next;
+    });
   };
 
   const handleCheckboxChange = (optionName, itemId, isChecked) => {
@@ -90,6 +97,7 @@ export const MiMoV2FlashDeployment = () => {
   const generateCommand = () => {
     const { hardware, strategy, reasoning } = values;
     const isMI355X = hardware === 'mi355x';
+    const isXeon = hardware === 'xeon';
 
     const modelPath = 'XiaomiMiMo/MiMo-V2-Flash';
     const strategyArray = Array.isArray(strategy) ? strategy : [];
@@ -103,20 +111,23 @@ export const MiMoV2FlashDeployment = () => {
     const commandPrefix = isMI355X
       ? 'PYTHONPATH=/sgl-workspace/aiter SGLANG_USE_AITER=0 USE_ROCM_AITER_ROPE_BACKEND=0 '
       : '';
-    const tpSize = isMI355X ? 4 : 8;
+    const tpSize = isMI355X || isXeon ? 4 : 8;
 
     let cmd = `${commandPrefix}sglang serve \\\n`;
     cmd += `  --model-path ${modelPath} \\\n`;
     cmd += `  --trust-remote-code \\\n`;
+    if (isXeon) {
+      cmd += `  --device cpu \\\n  --disable-overlap-schedule \\\n`;
+    }
     cmd += `  --tp-size ${tpSize}`;
 
     // DP settings
-    if (!isMI355X && strategyArray.includes('dp')) {
+    if (!isMI355X && !isXeon && strategyArray.includes('dp')) {
       cmd += ` \\\n  --attn-dp-size 2`;
     }
 
     // Performance Optimizations
-    if (strategyArray.includes('optimization')) {
+    if (!isXeon && strategyArray.includes('optimization')) {
       cmd += ` \\\n  --mem-fraction-static 0.75 \\\n  --max-running-requests 128 \\\n  --chunked-prefill-size 16384 \\\n  --model-loader-extra-config '{"enable_multithread_load": "true","num_threads": 64}'`;
       cmd += isMI355X
         ? ` \\\n  --attention-backend triton \\\n  --prefill-attention-backend triton \\\n  --decode-attention-backend triton \\\n  --disable-custom-all-reduce`
@@ -124,7 +135,7 @@ export const MiMoV2FlashDeployment = () => {
     }
 
     // MTP/Speculative settings
-    if (!isMI355X && strategyArray.includes('mtp')) {
+    if (!isMI355X && !isXeon && strategyArray.includes('mtp')) {
       cmd += ` \\\n  --speculative-algorithm EAGLE \\\n  --speculative-num-steps 3 \\\n  --speculative-eagle-topk 1 \\\n  --speculative-num-draft-tokens 4 \\\n  --enable-multi-layer-eagle`;
     }
 
@@ -161,11 +172,16 @@ export const MiMoV2FlashDeployment = () => {
             {option.type === 'checkbox' ? (
               option.items.map(item => {
                 const isChecked = (values[option.name] || []).includes(item.id);
-                const isDisabled = item.disabled;
+                const dynDisabled = typeof item.disabledWhen === 'function' && item.disabledWhen(values);
+                const isDisabled = item.disabled || dynDisabled;
+                const displayLabel =
+                  item.id === 'tp' && (values.hardware === 'xeon' || values.hardware === 'mi355x')
+                    ? 'TP 4 (Required)'
+                    : item.label;
                 return (
                   <label key={item.id} style={{ ...labelBaseStyle, ...(isChecked ? checkedStyle : {}), ...(isDisabled ? disabledStyle : {}) }}>
-                    <input type="checkbox" checked={isChecked} disabled={isDisabled} onChange={(e) => handleCheckboxChange(option.name, item.id, e.target.checked)} style={{ display: 'none' }} />
-                    {item.label}
+                    <input type="checkbox" checked={isChecked} disabled={isDisabled} onChange={(e) => !isDisabled && handleCheckboxChange(option.name, item.id, e.target.checked)} style={{ display: 'none' }} />
+                    {displayLabel}
                     {item.subtitle && <small style={{ ...subtitleStyle, color: isChecked ? 'rgba(255,255,255,0.85)' : 'inherit' }}>{item.subtitle}</small>}
                   </label>
                 );

@@ -2,16 +2,17 @@ export const config = (() => {
 const sm12Hardware = ["rtx5090", "rtxpro6000", "dgx-spark"];
 // One B200 serves the platform default, cuDNN SDPA: 2.22 s against 2.32 s with FlashAttention for
 // 1024px/40-step generation and 2.70 s against 2.89 s for an edit (2026-11-01, sglang 3a01d4cc).
-const platformAttention = (s) => sm12Hardware.includes(s.hw) ? "sdpa" : s.hw === "b200" && Number(s.gpus_per_node) === 1 ? "cudnn" : "fa";
+const platformAttention = (s) => s.hw === "xeon" || sm12Hardware.includes(s.hw) ? "sdpa" : s.hw === "b200" && Number(s.gpus_per_node) === 1 ? "cudnn" : "fa";
 const effectiveAttention = (s) => s.attention === "platform" || (sm12Hardware.includes(s.hw) && s.attention === "fa") ? platformAttention(s) : s.attention;
 
 const config = {
   modelName: "Qwen-Image 2.1 / Turbo",
-  supportedHardware: ["h200", "b200", "rtxpro6000", "rtx5090", "rtx4090", "dgx-spark"],
+  supportedHardware: ["h200", "b200", "rtxpro6000", "rtx5090", "rtx4090", "dgx-spark", "xeon"],
   hardware: [
     { id: "rtxpro6000", label: "RTX PRO 6000", vram: "96GB", vendor: "consumer" },
     { id: "rtx5090", label: "RTX 5090", vram: "32GB", vendor: "consumer" },
     { id: "rtx4090", label: "RTX 4090", vram: "24GB", vendor: "consumer" },
+    { id: "xeon", label: "XEON", vram: "CPU", vendor: "cpu" },
   ],
   groupHardware: false,
   matchDims: [],
@@ -50,14 +51,16 @@ const config = {
       options: [
         {
           id: "resident", label: "Resident",
-          recommendedWhen: (s) => ["h200", "b200", "rtxpro6000", "dgx-spark"].includes(s.hw),
+          recommendedWhen: (s) => ["h200", "b200", "rtxpro6000", "dgx-spark", "xeon"].includes(s.hw),
           disabled: (s) => ["rtx5090", "rtx4090"].includes(s.hw) && Number(s.gpus_per_node) === 1,
           disableReason: "The full resident pipeline exceeds one consumer GPU's memory. Select CPU offload.",
-          flags: ["--performance-mode speed"],
+          flags: (s) => s.hw === "xeon" ? [] : ["--performance-mode speed"],
           description: "Keep all components resident. Recommended for H200, B200, RTX PRO 6000 96GB, and DGX Spark 128GB unified memory. RTX 5090 and RTX 4090 need offload.",
         },
         {
           id: "offload", label: "CPU offload",
+          disabled: (s) => s.hw === "xeon",
+          disableReason: "CPU offload is for GPU memory management; Intel Xeon CPUs already run in host memory.",
           flags: (s) => ["rtx4090", "rtx5090"].includes(s.hw) && Number(s.gpus_per_node) === 1 && effectiveAttention(s) === platformAttention(s) && s.precision === "native" && s.execution === "eager"
             && ["text", "edit"].includes(s.mode) && Number(s.outputs) === 1 && (!s.batching || s.batching === "off")
             ? ["--performance-mode manual", "--component-residency text_encoder=layerwise-offload"]
@@ -69,6 +72,8 @@ const config = {
         },
         {
           id: "all_offload", label: "All components layerwise",
+          disabled: (s) => s.hw === "xeon",
+          disableReason: "Layerwise offload is for GPU memory management; Intel Xeon CPUs already run in host memory.",
           flags: ["--performance-mode manual", "--layerwise-offload-components all"],
           soft: true, softReason: "Full-checkpoint 512px editing passed on B200, including TP2 with spatial VAE decode; this HTTP recipe is unverified.",
           description: "Streams repeated blocks in the DiT, Qwen3-VL, and VAE. Uses more host-device transfers to reduce device memory.",
@@ -86,11 +91,18 @@ const config = {
         {
           id: "platform", label: "Automatic", recommended: true,
           flags: (s) => s.hw === "b200" && Number(s.gpus_per_node) !== 1 ? ["--attention-backend fa"] : [],
-          description: "Uses cuDNN SDPA on one B200, SDPA on RTX PRO 6000, RTX 5090, and DGX Spark, and FlashAttention on the other listed GPUs.",
+          description: "Uses cuDNN SDPA on one B200, SDPA on RTX PRO 6000, RTX 5090, DGX Spark, and Intel Xeon CPUs, and FlashAttention on the other listed GPUs.",
         },
-        { id: "fa", label: "FlashAttention", flags: ["--attention-backend fa"], description: "Exact attention with a fused kernel. This runtime falls back to Torch SDPA on RTX PRO 6000, RTX 5090, and DGX Spark." },
+        {
+          id: "fa", label: "FlashAttention", flags: ["--attention-backend fa"],
+          disabled: (s) => s.hw === "xeon",
+          disableReason: "FlashAttention requires a CUDA GPU.",
+          description: "Exact attention with a fused kernel. This runtime falls back to Torch SDPA on RTX PRO 6000, RTX 5090, and DGX Spark.",
+        },
         {
           id: "cudnn", label: "cuDNN SDPA", flags: ["--attention-backend dynamic_cudnn_sdpa"],
+          disabled: (s) => s.hw === "xeon",
+          disableReason: "cuDNN SDPA requires an NVIDIA GPU.",
           soft: (s) => !config.commandBuilder.resource.verifiedRecipes.some((r) => r.hw === s.hw && r.placement === s.placement && r.attentions.includes("cudnn") && Number(s.gpus_per_node) === r.gpus_per_node),
           softReason: "This hardware and placement combination has not completed HTTP verification with cuDNN SDPA.",
           description: "Exact attention through cuDNN on Blackwell. Floating-point reduction order can differ from FlashAttention.",
@@ -103,6 +115,8 @@ const config = {
         },
         {
           id: "sage", label: "SageAttention", flags: ["--attention-backend sage_attn"],
+          disabled: (s) => s.hw === "xeon",
+          disableReason: "SageAttention requires a CUDA GPU.",
           soft: true, softReason: "CLI smoke test passed; image and alpha quality need workload-specific validation.",
           description: "Approximate attention; requires the SageAttention dependency.",
         },
@@ -118,38 +132,47 @@ const config = {
         { id: "native", label: "Native BF16 / FP32", recommended: true },
         {
           id: "fp8_dit", label: "Online FP8 DiT", flags: ["--component-quantizations.transformer fp8"],
+          disabled: (s) => s.hw === "xeon", disableReason: "Quantized diffusion recipes are not validated on Intel Xeon CPUs.",
           soft: true, softReason: "Online FP8 passed 1024px/40-step generation and editing on one resident B200. Other hardware, alpha, and feature combinations remain unverified.",
         },
         {
           id: "fp8_encoder", label: "Online FP8 encoder", flags: ["--component-quantizations.text_encoder fp8"],
+          disabled: (s) => s.hw === "xeon", disableReason: "Quantized diffusion recipes are not validated on Intel Xeon CPUs.",
           soft: true, softReason: "Online encoder FP8 passed 1024px/40-step generation and editing on one resident B200. It changes conditioning and output pixels.",
         },
         {
           id: "fp8_both", label: "Online FP8 DiT + encoder", flags: ["--component-quantizations.transformer fp8", "--component-quantizations.text_encoder fp8"],
+          disabled: (s) => s.hw === "xeon", disableReason: "Quantized diffusion recipes are not validated on Intel Xeon CPUs.",
           soft: true, softReason: "Online FP8 for both components passed generation, editing, and transparent output on one resident B200. Quality depends on the workload.",
         },
         {
           id: "serialized_fp8_dit", label: "Serialized FP8 DiT", flags: ['--component-paths.transformer "{{FP8_DIT_PATH}}"'],
+          disabled: (s) => s.hw === "xeon", disableReason: "Quantized diffusion recipes are not validated on Intel Xeon CPUs.",
           soft: true, softReason: "A tensorwise E4M3FN component export passed 1024px/40-step generation, editing, and transparent output on B200. Validate your exported checkpoint's quality.",
         },
         {
           id: "serialized_fp8_encoder", label: "Serialized FP8 encoder", flags: ['--component-paths.text_encoder "{{FP8_ENCODER_PATH}}"'],
+          disabled: (s) => s.hw === "xeon", disableReason: "Quantized diffusion recipes are not validated on Intel Xeon CPUs.",
           soft: true, softReason: "A tensorwise E4M3FN language encoder export passed generation, editing, and transparent output on B200; vision weights retain native precision.",
         },
         {
           id: "serialized_fp8_both", label: "Serialized FP8 DiT + encoder", flags: ['--component-paths.transformer "{{FP8_DIT_PATH}}"', '--component-paths.text_encoder "{{FP8_ENCODER_PATH}}"'],
+          disabled: (s) => s.hw === "xeon", disableReason: "Quantized diffusion recipes are not validated on Intel Xeon CPUs.",
           soft: true, softReason: "Exported components passed 1024px/40-step generation, editing, and transparent output on B200. All-component offload matched resident pixels after the vision RoPE fix; TP2 changes numerical results. Validate your exported checkpoint's quality.",
         },
         {
           id: "gguf_dit", label: "GGUF DiT", flags: ['--component-weights-paths.transformer "{{GGUF_DIT_PATH}}"'],
+          disabled: (s) => s.hw === "xeon", disableReason: "Quantized diffusion recipes are not validated on Intel Xeon CPUs.",
           soft: true, softReason: "A Q4_0 DiT export passed 1024px/40-step generation, editing, and transparent output on B200. Other exports and hardware need validation.",
         },
         {
           id: "gguf_encoder", label: "GGUF encoder", flags: ['--component-weights-paths.text_encoder "{{GGUF_ENCODER_PATH}}"'],
+          disabled: (s) => s.hw === "xeon", disableReason: "Quantized diffusion recipes are not validated on Intel Xeon CPUs.",
           soft: true, softReason: "A native-name Q4_0 language encoder export passed generation, editing, and transparent output on B200; vision weights retain native precision.",
         },
         {
           id: "gguf_both", label: "GGUF DiT + encoder", flags: ['--component-weights-paths.transformer "{{GGUF_DIT_PATH}}"', '--component-weights-paths.text_encoder "{{GGUF_ENCODER_PATH}}"'],
+          disabled: (s) => s.hw === "xeon", disableReason: "Quantized diffusion recipes are not validated on Intel Xeon CPUs.",
           soft: true, softReason: "Combined Q4_0 exports passed 1024px/40-step generation, editing, and transparent output on B200. GGUF reduces weight memory; output quality and speed depend on the export and workload.",
         },
         {
@@ -181,8 +204,8 @@ const config = {
       default: "auto",
       options: [
         { id: "auto", label: "Auto", recommended: true },
-        { id: "replicate", label: "Replicate", flags: ["--encoder-parallel replicate"], soft: true, softReason: "Explicit replication has not been verified for this server recipe." },
-        { id: "fold", label: "Fold", flags: ["--encoder-parallel fold"], soft: true, softReason: "Native encoder TP and full-checkpoint TP2 × SP2 editing passed on B200. Requires node-local P2P; this HTTP recipe is unverified." },
+        { id: "replicate", label: "Replicate", flags: ["--encoder-parallel replicate"], disabled: (s) => s.hw === "xeon", disableReason: "Multi-GPU encoder parallelism is not used on Intel Xeon CPUs.", soft: true, softReason: "Explicit replication has not been verified for this server recipe." },
+        { id: "fold", label: "Fold", flags: ["--encoder-parallel fold"], disabled: (s) => s.hw === "xeon", disableReason: "Multi-GPU encoder parallelism is not used on Intel Xeon CPUs.", soft: true, softReason: "Native encoder TP and full-checkpoint TP2 × SP2 editing passed on B200. Requires node-local P2P; this HTTP recipe is unverified." },
       ],
     },
     {
@@ -221,6 +244,8 @@ const config = {
         { id: "eager", label: "Eager", recommended: true },
         {
           id: "bcg", label: "Breakable CUDA Graph",
+          disabled: (s) => s.hw === "xeon",
+          disableReason: "Breakable CUDA Graph requires an NVIDIA CUDA GPU.",
           flags: (s) => ["--enable-breakable-cuda-graph true", `--warmup-resolutions ${s.resolution || "1024"}x${s.resolution || "1024"}`],
           soft: true, softReason: "Unmatched condition-prefix shapes run eagerly. Keep eager execution for the recommended recipes.",
           description: "Captures the selected resolution. Condition-prefix shapes must also match warmup; text buckets alone do not ensure replay.",
@@ -302,7 +327,10 @@ const config = {
       tp_size: 1, ulysses_degree: 1, ring_degree: 1,
     },
     resource: {
-      limits: { nodes: { min: 1, max: 1 }, gpus_per_node: { min: 1, max: 4 } },
+      limits: {
+        nodes: { min: 1, max: 1 },
+        gpus_per_node: { min: 1, max: 4, disabledWhen: (s) => s.hw === "xeon", disabledValue: 1 },
+      },
       verifiedRecipes: [
         { id: "h200-1-resident", hw: "h200", nodes: 1, gpus_per_node: 1, placement: "resident", tp_size: 1, ulysses_degree: 1, ring_degree: 1, encoder: "auto", attentions: ["fa", "sdpa"], batchSizes: [1, 2, 4], batchAttentions: ["fa"], default: true },
         { id: "h200-2-tp-turbo", weights: "turbo", hw: "h200", nodes: 1, gpus_per_node: 2, placement: "resident", tp_size: 2, ulysses_degree: 1, ring_degree: 1, encoder: "auto", attentions: ["fa"], verifiedWhen: (s) => s.weights === "turbo" && (!s.batching || s.batching === "off") },
@@ -329,6 +357,7 @@ const config = {
         if (nodes !== 1) errors.push("This picker covers single-node deployment only.");
         if (![1, 2, 4].includes(perNode)) errors.push("Select one, two, or four GPUs per node.");
         if (s.hw === "dgx-spark" && perNode !== 1) errors.push("DGX Spark has one GPU per node. This picker covers one Spark only.");
+        if (s.hw === "xeon" && (perNode !== 1 || tp !== 1 || ulysses !== 1 || ring !== 1)) errors.push("Intel Xeon CPU deployment runs a single process without multi-GPU parallelism.");
         if (![tp, ulysses, ring].every((n) => [1, 2, 4].includes(n))) errors.push("TP, Ulysses and Ring must each be 1, 2, or 4.");
         if (nodes * perNode !== tp * ulysses * ring) errors.push(`World size ${nodes * perNode} must equal TP × Ulysses × Ring (${tp * ulysses * ring}).`);
         if (32 % (tp * ulysses) !== 0) errors.push("32 attention heads must be divisible by TP × Ulysses.");
@@ -384,9 +413,10 @@ const config = {
       if (!requestVerified && !errors.length) warnings.push("This request shape is outside the verified HTTP matrix.");
       return {
         match: { hw: s.hw }, nnodes: Number(s.nodes), verified: serveVerified, flags,
+        env: s.hw === "xeon" ? ["SGLANG_DIFFUSION_PLATFORM_OVERRIDE=cpu"] : [],
         builder: {
           topology,
-          topologySummary: `TP ${topology.tp_size} · Ulysses ${topology.ulysses_degree} · Ring ${topology.ring_degree}`,
+          topologySummary: s.hw === "xeon" ? "CPU" : `TP ${topology.tp_size} · Ulysses ${topology.ulysses_degree} · Ring ${topology.ring_degree}`,
           errors, warnings,
           verification: {
             serve: errors.length ? "error" : serveVerified ? "verified" : "unverified",
@@ -395,7 +425,7 @@ const config = {
           resolvedSettings: {
             attention: s.attention === "platform" ? `${{ sdpa: "Torch SDPA", cudnn: "cuDNN SDPA" }[platformAttention(s)] || "FlashAttention"} (auto)`
               : sm12Hardware.includes(s.hw) && s.attention === "fa" ? "Torch SDPA (FA fallback)" : undefined,
-            encoder: s.encoder === "auto" && world === 1 ? "Single GPU (auto)" : undefined,
+            encoder: s.encoder === "auto" && world === 1 ? (s.hw === "xeon" ? "CPU (auto)" : "Single GPU (auto)") : undefined,
           },
         },
       };

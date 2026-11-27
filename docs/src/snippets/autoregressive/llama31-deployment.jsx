@@ -66,7 +66,7 @@ export const Llama31Deployment = () => {
         ...options.modelsize,
         items: options.modelsize.items.map(item => ({
           ...item,
-          disabled: (values.hardware === 'xeon' || values.hardware === 'arc_b') && item.id !== '8b'
+          disabled: values.hardware === 'arc_b' && item.id !== '8b'
         }))
       },
       category: {
@@ -126,7 +126,6 @@ export const Llama31Deployment = () => {
     setValues(prev => {
       const next = { ...prev, [optionName]: value };
       if (optionName === 'hardware' && value === 'xeon') {
-        next.modelsize = '8b';
         next.quantization = 'bf16';
         next.optimization = 'basic';
       }
@@ -147,7 +146,7 @@ export const Llama31Deployment = () => {
     const isAMD = hardware === 'mi300x' || hardware === 'mi325x' || hardware === 'mi355x';
 
     const isXeon = hardware === 'xeon';
-    const effectiveModelSize = isXeon ? '8b' : modelsize;
+    const effectiveModelSize = hardware === 'arc_b' ? '8b' : modelsize;
 
     // Model size mapping
     const sizeMap = {
@@ -200,7 +199,7 @@ export const Llama31Deployment = () => {
         : amdTpConfig[hardware][effectiveModelSize].bf16;
     } else if (isXeon) {
       // Intel Xeon CPU TP configuration
-      tpSize = 3;
+      tpSize = effectiveModelSize === '8b' ? 3 : 6;
     } else if (hardware === 'arc_b') {
       tpSize = 1;
     } else {

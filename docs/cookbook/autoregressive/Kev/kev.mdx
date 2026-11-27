@@ -12,6 +12,12 @@ Every Kev size runs on one GPU in BF16 with TP=1 and needs no extra flag. SGLang
 sglang serve --model-path jaredpalmer/kev-27b --host 0.0.0.0 --port 30000
 ```
 
+On Intel Xeon CPUs, serve `jaredpalmer/kev-27b` with CPU execution enabled:
+
+```bash Command
+sglang serve --model-path jaredpalmer/kev-27b --device cpu --disable-overlap-schedule --dtype bfloat16 --host 0.0.0.0 --port 30000
+```
+
 Replace the model path with any size in the table below. Each was validated on one H200.
 
 | Model | Hugging Face ID | Checkpoint | Backbone | GPU memory for weights |

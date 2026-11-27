@@ -3,7 +3,11 @@
 export const config = {
   modelName: "Ornith-1.5",
 
-  supportedHardware: ["h100", "h200"],
+  supportedHardware: ["h100", "h200", "xeon"],
+  hardware: [
+    { id: "xeon", label: "XEON", vram: "CPU", vendor: "cpu" },
+  ],
+  runModes: (s) => s.hw === "xeon" ? ["python"] : ["python", "docker"],
 
   showPlaygroundLink: false,
 
@@ -66,6 +70,10 @@ export const config = {
 
   github: {
     cookbookModel: "ornith-ai/Ornith-1.5",
+  },
+
+  playgroundFeatures: {
+    normalizeDeltas: (deltas, derived, base) => base.hw === "xeon" ? {} : deltas,
   },
 
   cells: [
@@ -227,6 +235,40 @@ export const config = {
         "--served-model-name {{MODEL_NAME}}",
         "--tp 1",
         "--context-length 262144",
+        "--mem-fraction-static 0.85",
+        "--tool-call-parser qwen3_coder",
+        "--reasoning-parser qwen3",
+        "--host {{HOST_IP}}",
+        "--port {{PORT}}",
+      ],
+    },
+    {
+      match: { hw: "xeon", variant: "122b", quant: "bf16", strategy: "balanced", nodes: "single" },
+      verified: true,
+      env: [],
+      flags: [
+        "--model-path ornith-ai/Ornith-1.5-122B",
+        "--served-model-name {{MODEL_NAME}}",
+        "--device cpu",
+        "--disable-overlap-schedule",
+        "--tp 6",
+        "--mem-fraction-static 0.80",
+        "--tool-call-parser qwen3_coder",
+        "--reasoning-parser qwen3",
+        "--host {{HOST_IP}}",
+        "--port {{PORT}}",
+      ],
+    },
+    {
+      match: { hw: "xeon", variant: "397b", quant: "bf16", strategy: "balanced", nodes: "single" },
+      verified: true,
+      env: [],
+      flags: [
+        "--model-path ornith-ai/Ornith-1.5-397B",
+        "--served-model-name {{MODEL_NAME}}",
+        "--device cpu",
+        "--disable-overlap-schedule",
+        "--tp 6",
         "--mem-fraction-static 0.85",
         "--tool-call-parser qwen3_coder",
         "--reasoning-parser qwen3",
